@@ -54,7 +54,7 @@ uploads, exclusões) é testada com um filesystem em memória e um provedor fals
 
 ```powershell
 holo login                                  # abre o navegador
-holo add-root D:\OneDrive\Teste --remote /holo-test
+holo add-root D:\OneDrive\Teste --remote /holo-test --create   # --create: cria a pasta remota (e pais) se não existir
 holo run                                    # foreground; Ctrl+C para parar
 holo status
 holo ops                                    # journal; `release`/`discard` após o guard de exclusão em massa
