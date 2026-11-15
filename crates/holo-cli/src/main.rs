@@ -92,16 +92,31 @@ enum Command {
     /// Run the sync engine in the foreground (Ctrl+C to stop).
     Run,
     /// Show per-root sync status.
-    Status,
+    Status {
+        #[command(flatten)]
+        stream: StreamArgs,
+    },
     /// Inspect or act on the local operation journal.
     Ops {
         #[command(subcommand)]
         action: Option<OpsAction>,
+        #[command(flatten)]
+        stream: StreamArgs,
     },
     /// "Always keep on this device" for a file or folder.
     Pin { path: PathBuf },
     /// "Free up space": keep only in the cloud.
     Free { path: PathBuf },
+}
+
+#[derive(clap::Args, Clone, Copy)]
+pub struct StreamArgs {
+    /// Keep watching and print changes as they happen (Ctrl+C to stop).
+    #[arg(long)]
+    pub stream: bool,
+    /// Poll interval for --stream, in milliseconds.
+    #[arg(long, default_value_t = 1000, requires = "stream")]
+    pub interval: u64,
 }
 
 #[derive(Subcommand)]
@@ -195,8 +210,10 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Command::Run => cmd::run::run(&ctx).await,
-        Command::Status => cmd::misc::status(&ctx),
-        Command::Ops { action } => cmd::misc::ops(&ctx, action.unwrap_or(OpsAction::List)),
+        Command::Status { stream } => cmd::misc::status(&ctx, stream).await,
+        Command::Ops { action, stream } => {
+            cmd::misc::ops(&ctx, action.unwrap_or(OpsAction::List), stream).await
+        }
         Command::Pin { path } => cmd::misc::pin(&path, true),
         Command::Free { path } => cmd::misc::pin(&path, false),
     }
