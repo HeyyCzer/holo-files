@@ -3,6 +3,7 @@ pub mod misc;
 pub mod plan;
 pub mod roots;
 pub mod run;
+pub mod service;
 
 use std::sync::Arc;
 

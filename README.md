@@ -56,6 +56,8 @@ uploads, exclusões) é testada com um filesystem em memória e um provedor fals
 holo login                                  # abre o navegador
 holo add-root D:\OneDrive\Teste --remote /holo-test --create   # --create: cria a pasta remota (e pais) se não existir
 holo run                                    # foreground; Ctrl+C para parar
+holo service install                        # roda em background no logon (tarefa agendada por usuário, sem janela)
+holo service stop|start|status|uninstall     # stop = desligamento limpo
 holo status                                 # --stream: acompanha ao vivo (itens, pending/held/failed com deltas)
 holo ops                                    # journal; `release`/`discard` após o guard de exclusão em massa
 holo ops --stream                           # acompanha o journal ao vivo: + nova, ~ mudou, - concluída/descartada

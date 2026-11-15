@@ -77,7 +77,10 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<()> {
         roots = handles.len(),
         "holo is running; press Ctrl+C to stop"
     );
-    tokio::signal::ctrl_c().await?;
+    tokio::select! {
+        r = tokio::signal::ctrl_c() => r?,
+        () = super::service::stop_requested() => tracing::info!("stop requested by `holo service stop`"),
+    }
     tracing::info!("stopping…");
     for h in handles {
         h.shutdown().await;

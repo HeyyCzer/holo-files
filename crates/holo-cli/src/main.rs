@@ -103,10 +103,32 @@ enum Command {
         #[command(flatten)]
         stream: StreamArgs,
     },
+    /// Run `holo run` in the background at logon (per-user scheduled task, no window).
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
     /// "Always keep on this device" for a file or folder.
     Pin { path: PathBuf },
     /// "Free up space": keep only in the cloud.
     Free { path: PathBuf },
+}
+
+#[derive(Subcommand)]
+pub enum ServiceAction {
+    /// Register the logon task (and start it now unless --no-start).
+    Install {
+        #[arg(long)]
+        no_start: bool,
+    },
+    /// Stop the daemon and remove the logon task.
+    Uninstall,
+    /// Start the daemon now through the task.
+    Start,
+    /// Ask the running daemon to shut down cleanly.
+    Stop,
+    /// Show whether the task is installed and the daemon is running.
+    Status,
 }
 
 #[derive(clap::Args, Clone, Copy)]
@@ -214,6 +236,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Ops { action, stream } => {
             cmd::misc::ops(&ctx, action.unwrap_or(OpsAction::List), stream).await
         }
+        Command::Service { action } => cmd::service::service(&ctx, action).await,
         Command::Pin { path } => cmd::misc::pin(&path, true),
         Command::Free { path } => cmd::misc::pin(&path, false),
     }
