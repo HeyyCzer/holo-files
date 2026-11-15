@@ -151,12 +151,17 @@ pub struct Totals {
 pub struct Report {
     /// Remote side was a complete listing (cold start / `--full`).
     pub full: bool,
+    /// Remote side was only a sample (`--sample`): totals cover the sample only and
+    /// no remote deletions were inferred.
+    pub partial: bool,
     pub remote_changes: usize,
     pub entries: Vec<Entry>,
 }
 
 impl Report {
     fn push(&mut self, kind: Kind, path: RelPath, from: Option<RelPath>, is_dir: bool, bytes: u64) {
+        // Folder sizes in the cloud are the sum of their contents: never count them.
+        let bytes = if is_dir { 0 } else { bytes };
         self.entries.push(Entry {
             kind,
             direction: kind.direction(),
@@ -212,6 +217,8 @@ pub struct PreviewInput<'a> {
     pub known: &'a HashMap<RemoteItemId, ItemRecord>,
     pub changes: &'a [RemoteItem],
     pub full: bool,
+    /// `changes` is a truncated sample (see [`Report::partial`]).
+    pub partial: bool,
     /// Compare content of same-name files (reads local files; no download).
     pub hash: bool,
     pub mass_delete_threshold: usize,
@@ -224,7 +231,7 @@ pub fn preview(inp: &PreviewInput<'_>) -> io::Result<Report> {
         inp.remote_root,
         inp.known,
         inp.changes,
-        inp.full,
+        inp.full && !inp.partial,
         inp.ignore,
     );
     let deleting: HashSet<RemoteItemId> = actions
@@ -236,7 +243,8 @@ pub fn preview(inp: &PreviewInput<'_>) -> io::Result<Report> {
         .collect();
 
     let mut report = Report {
-        full: inp.full,
+        full: inp.full && !inp.partial,
+        partial: inp.partial,
         remote_changes: inp.changes.len(),
         ..Default::default()
     };

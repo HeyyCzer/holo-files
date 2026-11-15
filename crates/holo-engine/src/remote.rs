@@ -39,10 +39,13 @@ pub fn spec(item: &RemoteItem) -> PlaceholderSpec {
 /// Remote changes since `cursor` (or a full enumeration when `None`).
 pub struct Fetched {
     pub changes: Vec<RemoteItem>,
-    /// Position to persist once the changes are applied.
+    /// Position to persist once the changes are applied (meaningless if `truncated`).
     pub cursor: Option<ChangeCursor>,
     /// `changes` is a complete listing (first sync, or the cursor expired).
+    /// Always `false` when `truncated`.
     pub full: bool,
+    /// Listing stopped early because of `max_items`: a sample, not the whole picture.
+    pub truncated: bool,
 }
 
 /// Page through the change feed until caught up. Read-only: persists nothing.
@@ -51,19 +54,46 @@ pub async fn fetch_changes(
     scope: &RemoteItemId,
     cursor: Option<ChangeCursor>,
 ) -> anyhow::Result<Fetched> {
+    fetch_changes_with(provider, scope, cursor, None, |_, _| {}).await
+}
+
+/// Like [`fetch_changes`], but stops after `max_items` items (a sample) and reports
+/// progress as `(items_so_far, pages_so_far)` after every page.
+pub async fn fetch_changes_with(
+    provider: &dyn CloudProvider,
+    scope: &RemoteItemId,
+    cursor: Option<ChangeCursor>,
+    max_items: Option<usize>,
+    mut progress: impl FnMut(usize, usize),
+) -> anyhow::Result<Fetched> {
     let mut cursor = cursor;
     let mut full = cursor.is_none();
     let mut changes = Vec::new();
+    let mut pages = 0;
     loop {
         match provider.changes(scope, cursor.as_ref()).await {
             Ok(batch) => {
                 changes.extend(batch.items);
                 cursor = Some(batch.cursor);
+                pages += 1;
+                progress(changes.len(), pages);
                 if !batch.has_more {
                     return Ok(Fetched {
                         changes,
                         cursor,
                         full,
+                        truncated: false,
+                    });
+                }
+                if let Some(max) = max_items
+                    && changes.len() >= max
+                {
+                    changes.truncate(max);
+                    return Ok(Fetched {
+                        changes,
+                        cursor,
+                        full: false,
+                        truncated: true,
                     });
                 }
             }
@@ -72,6 +102,7 @@ pub async fn fetch_changes(
                 cursor = None;
                 full = true;
                 changes.clear();
+                pages = 0;
             }
             Err(e) => return Err(e.into()),
         }
@@ -85,6 +116,7 @@ pub async fn pull(ctx: &Arc<RootContext>) -> anyhow::Result<usize> {
         changes,
         cursor,
         full,
+        ..
     } = fetch_changes(
         ctx.provider.as_ref(),
         ctx.remote_root(),
