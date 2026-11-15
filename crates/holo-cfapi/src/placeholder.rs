@@ -24,6 +24,7 @@ const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
 const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
 /// Map a Windows error to `io::Error`, keeping the Win32 code when there is one
 /// (so `ErrorKind::AlreadyExists`, `NotFound`, … work).
@@ -94,7 +95,13 @@ pub fn state(path: &Path) -> io::Result<Option<LocalState>> {
     let size = if is_dir { 0 } else { md.file_size() };
     let modified = md.modified().map(DateTime::<Utc>::from).unwrap_or_default();
 
-    let info = open_meta(path)?.info().map_err(win_err)?;
+    // Every placeholder is a reparse point; skip the CfApi query for plain files
+    // (faster scans, and works outside sync roots).
+    let info = if attrs & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+        None
+    } else {
+        open_meta(path)?.info().map_err(win_err)?
+    };
     let placeholder = info.map(|i| {
         let not_local =
             attrs & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE) != 0;
