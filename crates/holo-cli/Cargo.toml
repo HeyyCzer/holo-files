@@ -1,0 +1,36 @@
+[package]
+name = "holo-cli"
+description = "holo command-line interface and foreground daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "holo"
+path = "src/main.rs"
+
+[dependencies]
+holo-core.workspace = true
+holo-auth.workspace = true
+holo-state.workspace = true
+holo-onedrive.workspace = true
+holo-gdrive.workspace = true
+holo-cfapi.workspace = true
+holo-engine.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+directories.workspace = true
+serde.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+reqwest.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

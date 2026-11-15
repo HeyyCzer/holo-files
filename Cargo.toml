@@ -1,0 +1,59 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+holo-core = { path = "crates/holo-core" }
+holo-auth = { path = "crates/holo-auth" }
+holo-state = { path = "crates/holo-state" }
+holo-onedrive = { path = "crates/holo-onedrive" }
+holo-gdrive = { path = "crates/holo-gdrive" }
+holo-cfapi = { path = "crates/holo-cfapi" }
+holo-engine = { path = "crates/holo-engine" }
+
+anyhow = "1"
+async-trait = "0.1"
+base64 = "0.22"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+clap = { version = "4", features = ["derive"] }
+cloud-filter = "0.0.7"
+directories = "6"
+futures = "0.3"
+ignore = "0.4"
+nt-time = "0.15"
+rand = "0.9"
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "http2", "charset", "json", "stream", "form", "query"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net", "signal"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory"] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

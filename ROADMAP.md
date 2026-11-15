@@ -1,4 +1,4 @@
-# Roadmap: cliente OneDrive otimizado (nome provisório: `fastdrive`)
+# Roadmap: holo-files (cliente OneDrive otimizado, com Files On-Demand)
 
 ## Objetivo
 
@@ -13,7 +13,6 @@ Cliente de sincronização bidirecional para OneDrive no **Windows**, construíd
 
 ## Fora do escopo do MVP
 
-- Files On-Demand / placeholders (Cloud Filter API): fase futura, separada (ver o final do documento)
 - Bibliotecas do SharePoint, pastas compartilhadas ("Adicionar ao meu OneDrive"), Cofre Pessoal
 - Arquivos de pacote do OneNote
 - Coautoria do Office
@@ -21,18 +20,21 @@ Cliente de sincronização bidirecional para OneDrive no **Windows**, construíd
 
 ## Stack
 
-| Item | Escolha | Observação |
-|---|---|---|
-| Runtime | Node.js 22 LTS + TypeScript (strict) | Node por compatibilidade com addons nativos; avaliar Bun depois |
-| Gerenciador | pnpm | |
-| Auth | `@azure/msal-node` + `@azure/msal-node-extensions` | cache de token criptografado com DPAPI |
-| HTTP | `undici` / fetch nativo | cliente Graph próprio, fino |
-| Watcher | `@parcel/watcher` | usa `ReadDirectoryChangesW` nativo |
-| Estado | `better-sqlite3` | modo WAL |
-| Ignore | `ignore` | sintaxe estilo `.gitignore` |
-| Logs | `pino` | JSON, com rotação |
-| Testes | `vitest` | |
-| CLI | `commander` ou `citty` | |
+> **Mudou (2026-11-15):** a stack original era Node.js + TS com Files On-Demand num projeto
+> Rust separado. Como Files On-Demand passou a fazer parte do núcleo, tudo foi para **Rust**
+> num único workspace. Ver o README para a arquitetura.
+
+| Item | Escolha |
+|---|---|
+| Linguagem | Rust (edition 2024), workspace Cargo |
+| Files On-Demand | `cloud-filter` (wrapper da Cloud Filter API) |
+| Auth | OAuth 2.0 PKCE loopback próprio (`holo-auth`), tokens com DPAPI |
+| HTTP | `reqwest` (TLS nativo/SChannel) |
+| Mudanças locais | callbacks do Cloud Filter + watcher do `cloud-filter` (`ReadDirectoryChangesW`) |
+| Estado | SQLite (`rusqlite`, bundled, WAL) |
+| Ignore | `ignore` (sintaxe `.gitignore`), arquivo `.holoignore` por root |
+| Logs | `tracing` (stderr + JSON diário) |
+| CLI | `clap` |
 
 ## Regras para quem implementar
 
@@ -196,9 +198,9 @@ Comparação de três vias por item: **local atual × remoto atual × base (últ
 
 ---
 
-## Fase futura: Files On-Demand
+## Files On-Demand (implementado no núcleo, crate `holo-cfapi`)
 
-Só depois das fases 0–7 estarem sólidas. Projeto separado, em **Rust** (crate `cloud-filter`) ou C++, reaproveitando o estado, o delta e a lógica de conflitos:
+Status: registro, placeholders, hidratação por intervalo, pin/liberar espaço, notificações de renomear/apagar e bloqueio de processos (indexador) implementados e testados no driver real. Pendente: integração de status no Explorer, custom states.
 
 - `CfRegisterSyncRoot` e criação de placeholders
 - callbacks `FETCH_DATA` (hidratação, inclusive por intervalo de bytes) e `FETCH_PLACEHOLDERS` (enumeração sob demanda)

@@ -1,0 +1,25 @@
+[package]
+name = "holo-cfapi"
+description = "Files On-Demand: Windows Cloud Filter sync root, placeholders and callbacks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+holo-core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+cloud-filter.workspace = true
+nt-time.workspace = true
+windows.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
+
+[lints]
+workspace = true
