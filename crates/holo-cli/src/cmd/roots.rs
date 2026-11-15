@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, bail};
 use chrono::Utc;
-use holo_core::ProviderKind;
+use holo_core::{CloudProvider, ProviderError, ProviderKind, RemoteItem};
 use holo_state::RootRecord;
 
 use super::Ctx;
@@ -65,19 +65,55 @@ pub fn validate_local(ctx: &Ctx, local: &Path) -> anyhow::Result<PathBuf> {
     Ok(local)
 }
 
+/// `mkdir -p` on the remote: resolve each prefix of `path`, creating the missing ones.
+async fn create_remote_dirs(
+    provider: &dyn CloudProvider,
+    path: &str,
+) -> anyhow::Result<RemoteItem> {
+    let mut cur = provider.item_by_path("/").await?;
+    let mut prefix = String::new();
+    for seg in path.split(['/', '\\']).filter(|s| !s.is_empty()) {
+        prefix.push('/');
+        prefix.push_str(seg);
+        cur = match provider.item_by_path(&prefix).await {
+            Ok(item) => item,
+            Err(ProviderError::NotFound) => match provider.create_folder(&cur.id, seg).await {
+                Ok(item) => {
+                    println!("Created remote folder {prefix}");
+                    item
+                }
+                // Someone else created it in the meantime.
+                Err(ProviderError::NameConflict) => provider.item_by_path(&prefix).await?,
+                Err(e) => return Err(e.into()),
+            },
+            Err(e) => return Err(e.into()),
+        };
+        if !cur.is_dir() {
+            bail!("'{prefix}' exists and is not a folder");
+        }
+    }
+    Ok(cur)
+}
+
 pub async fn add(
     ctx: &Ctx,
     local: &Path,
     remote: &str,
     account: Option<&str>,
+    create: bool,
 ) -> anyhow::Result<()> {
     let account = ctx.account(account)?;
     let local = validate_local(ctx, local)?;
     let provider = providers::for_account(&ctx.cfg, &ctx.paths, &account).await?;
-    let remote_item = provider
-        .item_by_path(remote)
-        .await
-        .with_context(|| format!("remote folder '{remote}'"))?;
+    let remote_item = match provider.item_by_path(remote).await {
+        Err(ProviderError::NotFound) if create => create_remote_dirs(provider.as_ref(), remote)
+            .await
+            .with_context(|| format!("creating remote folder '{remote}'"))?,
+        Err(ProviderError::NotFound) => {
+            bail!("remote folder '{remote}' not found (pass --create to create it)")
+        }
+        other => other.with_context(|| format!("remote folder '{remote}'"))?,
+    };
     if !remote_item.is_dir() {
         bail!("'{remote}' is not a folder");
     }

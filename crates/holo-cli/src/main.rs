@@ -46,6 +46,9 @@ enum Command {
         /// Account id (see `holo accounts`). Optional if there is only one.
         #[arg(long)]
         account: Option<String>,
+        /// Create the remote folder (and missing parents) if it doesn't exist.
+        #[arg(long)]
+        create: bool,
     },
     /// Unregister a sync root. Files that are only in the cloud disappear locally.
     RemoveRoot {
@@ -162,7 +165,8 @@ async fn main() -> anyhow::Result<()> {
             local,
             remote,
             account,
-        } => cmd::roots::add(&ctx, &local, &remote, account.as_deref()).await,
+            create,
+        } => cmd::roots::add(&ctx, &local, &remote, account.as_deref(), create).await,
         Command::RemoveRoot { root, yes } => cmd::roots::remove(&ctx, &root, yes),
         Command::Roots => cmd::roots::list(&ctx),
         Command::Plan {
