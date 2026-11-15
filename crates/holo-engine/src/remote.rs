@@ -13,6 +13,10 @@ use holo_state::ItemRecord;
 
 use crate::{
     context::RootContext,
+    decide::{
+        ContentOutcome, CreateOutcome, DeleteOutcome, decide_content, decide_create,
+        decide_delete_file, identity,
+    },
     ops::{self, LocalOp},
     plan::{self, RemoteAction},
 };
@@ -113,12 +117,6 @@ pub fn apply(ctx: &RootContext, changes: &[RemoteItem], full: bool) -> anyhow::R
     Ok(())
 }
 
-fn identity_of(st: &holo_cfapi::LocalState) -> Option<RemoteItemId> {
-    st.identity()
-        .and_then(|b| std::str::from_utf8(b).ok())
-        .map(RemoteItemId::new)
-}
-
 fn apply_action(
     ctx: &RootContext,
     action: &RemoteAction,
@@ -158,7 +156,7 @@ fn clear_occupant(
     let Some(st) = ctx.tree.state(&local)? else {
         return Ok(());
     };
-    if let Some(id) = identity_of(&st)
+    if let Some(id) = identity(&st)
         && deleting.contains(&id)
     {
         remove_local(ctx, &local, path)?;
@@ -199,43 +197,31 @@ fn create(
     }
     let record = ItemRecord::from_remote(ctx.id(), item, path.clone());
 
-    if let Some(st) = ctx.tree.state(&local)? {
-        if identity_of(&st).as_ref() == Some(&item.id) {
-            // Already there (re-applied after a crash).
+    let st = ctx.tree.state(&local)?;
+    let outcome = decide_create(st.as_ref(), item, deleting, |algo| {
+        ctx.tree.hash(&local, algo)
+    })?;
+    match outcome {
+        CreateOutcome::AlreadyLinked => {
             ctx.state.upsert_item(&record)?;
             return Ok(());
         }
-        if st.is_dir && item.is_dir() && identity_of(&st).is_none() {
-            // Same folder on both sides (e.g. first sync over existing files): merge.
+        CreateOutcome::MergeFolder | CreateOutcome::LinkIdentical => {
             ctx.tree
                 .mark_synced(&local, item.id.as_str().as_bytes(), None)?;
             ctx.state.upsert_item(&record)?;
             return Ok(());
         }
-        if !st.is_dir
-            && !item.is_dir()
-            && identity_of(&st).is_none()
-            && same_content(ctx, &local, item)?
-        {
-            ctx.tree
-                .mark_synced(&local, item.id.as_str().as_bytes(), None)?;
-            ctx.state.upsert_item(&record)?;
-            return Ok(());
+        CreateOutcome::ReplaceStale | CreateOutcome::Conflict => {
+            clear_occupant(ctx, path, deleting)?;
         }
-        clear_occupant(ctx, path, deleting)?;
+        CreateOutcome::Placeholder => {}
     }
 
     ctx.tree
         .create_placeholder(&parent, path.name(), &spec(item))?;
     ctx.state.upsert_item(&record)?;
     Ok(())
-}
-
-fn same_content(ctx: &RootContext, local: &Path, item: &RemoteItem) -> anyhow::Result<bool> {
-    let Some(remote) = &item.hash else {
-        return Ok(false);
-    };
-    Ok(ctx.tree.hash(local, remote.algo)?.as_ref() == Some(remote))
 }
 
 fn change(
@@ -271,13 +257,13 @@ fn change(
 
     if content && !item.is_dir() {
         let local = ctx.local(to);
-        match ctx.tree.state(&local)? {
-            None => {
-                let parent = ctx.local(&to.parent().unwrap_or_default());
+        let parent = ctx.local(&to.parent().unwrap_or_default());
+        match decide_content(ctx.tree.state(&local)?.as_ref()) {
+            ContentOutcome::Recreate => {
                 ctx.tree
                     .create_placeholder(&parent, to.name(), &spec(item))?;
             }
-            Some(st) if !st.needs_upload() => {
+            ContentOutcome::Refresh { .. } => {
                 if ctx.tree.update_placeholder(&local, &spec(item), true)? {
                     // Pinned ("always keep on this device"): fetch the new version now.
                     let tree = ctx.tree.clone();
@@ -288,10 +274,8 @@ fn change(
                     });
                 }
             }
-            Some(_) => {
-                // Edited on both sides.
+            ContentOutcome::Conflict => {
                 move_aside(ctx, to)?;
-                let parent = ctx.local(&to.parent().unwrap_or_default());
                 ctx.tree
                     .create_placeholder(&parent, to.name(), &spec(item))?;
             }
@@ -320,12 +304,11 @@ fn remove_local(ctx: &RootContext, local: &Path, rel: &RelPath) -> anyhow::Resul
         }
         return Ok(());
     }
-    match &st.placeholder {
-        Some(p) if p.in_sync && p.partial => ctx.tree.remove_file(local)?,
-        // Fully local, unchanged: keep a copy in the holo trash just in case.
-        Some(p) if p.in_sync => ctx.tree.trash(local, &ctx.cfg.trash_dir)?,
-        _ if ctx.is_ignored(rel, false) => {}
-        _ => {
+    match decide_delete_file(&st, ctx.is_ignored(rel, false)) {
+        DeleteOutcome::Remove => ctx.tree.remove_file(local)?,
+        DeleteOutcome::Trash => ctx.tree.trash(local, &ctx.cfg.trash_dir)?,
+        DeleteOutcome::Skip => {}
+        DeleteOutcome::KeepAndReupload => {
             ctx.tree.detach(local)?;
             tracing::warn!(path = %rel, "deleted remotely but changed locally; re-uploading");
             ops::enqueue(ctx, &LocalOp::Upload { path: rel.clone() })?;

@@ -13,6 +13,7 @@
 
 pub mod config;
 pub mod context;
+pub mod decide;
 pub mod hydrate;
 pub mod local;
 pub mod local_tree;
