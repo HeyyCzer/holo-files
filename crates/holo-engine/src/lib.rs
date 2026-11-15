@@ -19,6 +19,7 @@ pub mod local;
 pub mod local_tree;
 pub mod ops;
 pub mod plan;
+pub mod preview;
 pub mod remote;
 pub mod runtime;
 

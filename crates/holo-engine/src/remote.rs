@@ -8,7 +8,9 @@ use std::{
 
 use anyhow::Context as _;
 use holo_cfapi::PlaceholderSpec;
-use holo_core::{ChangeCursor, ProviderError, RelPath, RemoteItem, RemoteItemId, naming};
+use holo_core::{
+    ChangeCursor, CloudProvider, ProviderError, RelPath, RemoteItem, RemoteItemId, naming,
+};
 use holo_state::ItemRecord;
 
 use crate::{
@@ -34,27 +36,39 @@ pub fn spec(item: &RemoteItem) -> PlaceholderSpec {
     }
 }
 
-/// Fetch all pending remote changes and apply them. Returns the number of changes seen.
-pub async fn pull(ctx: &Arc<RootContext>) -> anyhow::Result<usize> {
-    let root = ctx.state.root(ctx.id())?.context("root no longer exists")?;
-    let mut cursor = root.cursor.map(ChangeCursor);
+/// Remote changes since `cursor` (or a full enumeration when `None`).
+pub struct Fetched {
+    pub changes: Vec<RemoteItem>,
+    /// Position to persist once the changes are applied.
+    pub cursor: Option<ChangeCursor>,
+    /// `changes` is a complete listing (first sync, or the cursor expired).
+    pub full: bool,
+}
+
+/// Page through the change feed until caught up. Read-only: persists nothing.
+pub async fn fetch_changes(
+    provider: &dyn CloudProvider,
+    scope: &RemoteItemId,
+    cursor: Option<ChangeCursor>,
+) -> anyhow::Result<Fetched> {
+    let mut cursor = cursor;
     let mut full = cursor.is_none();
     let mut changes = Vec::new();
     loop {
-        match ctx
-            .provider
-            .changes(ctx.remote_root(), cursor.as_ref())
-            .await
-        {
+        match provider.changes(scope, cursor.as_ref()).await {
             Ok(batch) => {
                 changes.extend(batch.items);
                 cursor = Some(batch.cursor);
                 if !batch.has_more {
-                    break;
+                    return Ok(Fetched {
+                        changes,
+                        cursor,
+                        full,
+                    });
                 }
             }
             Err(ProviderError::ResyncRequired) => {
-                tracing::warn!(root = ctx.id(), "change cursor expired; re-enumerating");
+                tracing::warn!("change cursor expired; re-enumerating");
                 cursor = None;
                 full = true;
                 changes.clear();
@@ -62,6 +76,21 @@ pub async fn pull(ctx: &Arc<RootContext>) -> anyhow::Result<usize> {
             Err(e) => return Err(e.into()),
         }
     }
+}
+
+/// Fetch all pending remote changes and apply them. Returns the number of changes seen.
+pub async fn pull(ctx: &Arc<RootContext>) -> anyhow::Result<usize> {
+    let root = ctx.state.root(ctx.id())?.context("root no longer exists")?;
+    let Fetched {
+        changes,
+        cursor,
+        full,
+    } = fetch_changes(
+        ctx.provider.as_ref(),
+        ctx.remote_root(),
+        root.cursor.map(ChangeCursor),
+    )
+    .await?;
 
     let n = changes.len();
     if n > 0 || full {
