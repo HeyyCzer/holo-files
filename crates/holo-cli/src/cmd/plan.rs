@@ -6,7 +6,7 @@ use anyhow::{Context as _, bail};
 use holo_core::{ChangeCursor, ignore_rules::IgnoreRules};
 use holo_engine::{
     preview::{Direction, PreviewInput, Report, preview},
-    remote::fetch_changes,
+    remote::fetch_changes_with,
 };
 
 use super::{Ctx, human_bytes};
@@ -19,7 +19,8 @@ pub struct PlanArgs<'a> {
     pub full: bool,
     pub no_hash: bool,
     pub json: Option<&'a Path>,
-    pub limit: usize,
+    pub show: usize,
+    pub sample: Option<usize>,
 }
 
 fn arrow(d: Direction) -> &'static str {
@@ -104,8 +105,28 @@ pub async fn plan(ctx: &Ctx, a: PlanArgs<'_>) -> anyhow::Result<()> {
         }
     };
 
-    eprintln!("Listing remote changes…");
-    let fetched = fetch_changes(provider.as_ref(), &remote_root, cursor).await?;
+    let started = std::time::Instant::now();
+    let fetched = fetch_changes_with(
+        provider.as_ref(),
+        &remote_root,
+        cursor,
+        a.sample,
+        |items, pages| {
+            let secs = started.elapsed().as_secs_f64().max(0.1);
+            eprint!(
+                "\rListing cloud… {items} items, {pages} pages, {:.0} items/s   ",
+                items as f64 / secs
+            );
+        },
+    )
+    .await?;
+    eprintln!();
+    if fetched.truncated {
+        eprintln!(
+            "Stopped after {} items (--sample): this plan is PARTIAL.",
+            fetched.changes.len()
+        );
+    }
     let ignore = IgnoreRules::load(&local, engine_cfg.use_default_ignores, &engine_cfg.ignore)
         .map_err(|e| anyhow::anyhow!("invalid ignore rules: {e}"))?;
     if !a.no_hash {
@@ -124,13 +145,14 @@ pub async fn plan(ctx: &Ctx, a: PlanArgs<'_>) -> anyhow::Result<()> {
             known: &known,
             changes: &fetched.changes,
             full: fetched.full,
+            partial: fetched.truncated,
             hash,
             mass_delete_threshold: threshold,
         })
     })
     .await??;
 
-    print_report(&title, &report, a.limit, a.no_hash);
+    print_report(&title, &report, a.show, a.no_hash);
     if let Some(path) = a.json {
         std::fs::write(path, serde_json::to_vec_pretty(&report)?)?;
         println!("\nFull plan written to {}", path.display());
@@ -140,9 +162,20 @@ pub async fn plan(ctx: &Ctx, a: PlanArgs<'_>) -> anyhow::Result<()> {
 
 fn print_report(title: &str, r: &Report, limit: usize, no_hash: bool) {
     println!("\nPlan for {title}");
+    if r.partial {
+        println!(
+            "  !! PARTIAL: based on a sample of {} cloud items (--sample). Totals cover the sample only;",
+            r.remote_changes
+        );
+        println!(
+            "  !! items whose parent folder wasn't sampled are omitted and no cloud deletions are inferred."
+        );
+    }
     println!(
         "  {} ({} remote item(s){})",
-        if r.full {
+        if r.partial {
+            "sample"
+        } else if r.full {
             "full comparison"
         } else {
             "changes since last sync"
@@ -191,7 +224,7 @@ fn print_report(title: &str, r: &Report, limit: usize, no_hash: bool) {
         "\n  Details ({shown} of {}{}):",
         r.entries.len(),
         if shown < r.entries.len() {
-            "; --limit 0 for all, --json FILE to export"
+            "; --show 0 for all, --json FILE to export"
         } else {
             ""
         }

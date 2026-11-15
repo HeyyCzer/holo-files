@@ -1,0 +1,21 @@
+# Normalize line endings: LF in the repository and in the working tree, regardless of
+# the machine's core.autocrlf (rustfmt and the toolchain write LF on Windows too).
+* text=auto eol=lf
+
+# Windows-native scripts keep CRLF.
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Generated: collapse in diffs/PRs.
+Cargo.lock text eol=lf linguist-generated=true
+
+# Binary assets.
+*.ico binary
+*.png binary
+*.jpg binary
+*.exe binary
+*.dll binary
+*.pdb binary
+*.db binary

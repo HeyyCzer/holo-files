@@ -78,9 +78,13 @@ enum Command {
         /// Write the full plan as JSON.
         #[arg(long)]
         json: Option<PathBuf>,
-        /// Max detail lines to print (0 = all).
-        #[arg(long, default_value_t = 100)]
-        limit: usize,
+        /// Detail lines to print (0 = all). Only affects output, not the work done.
+        #[arg(long, alias = "limit", default_value_t = 100)]
+        show: usize,
+        /// Stop listing the cloud after N items and show a PARTIAL plan (quick look;
+        /// totals cover the sample only, no remote deletions are inferred).
+        #[arg(long)]
+        sample: Option<usize>,
     },
     /// Run the sync engine in the foreground (Ctrl+C to stop).
     Run,
@@ -168,7 +172,8 @@ async fn main() -> anyhow::Result<()> {
             full,
             no_hash,
             json,
-            limit,
+            show,
+            sample,
         } => {
             cmd::plan::plan(
                 &ctx,
@@ -179,7 +184,8 @@ async fn main() -> anyhow::Result<()> {
                     full,
                     no_hash,
                     json: json.as_deref(),
-                    limit,
+                    show,
+                    sample,
                 },
             )
             .await

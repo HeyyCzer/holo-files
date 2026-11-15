@@ -1038,6 +1038,7 @@ fn run_preview(
         known: &known,
         changes,
         full,
+        partial: false,
         hash,
         mass_delete_threshold: threshold,
     })
@@ -1165,5 +1166,35 @@ fn preview_incremental_reports_both_directions() {
         r.entries
             .iter()
             .any(|e| e.kind == DeleteRemoteHeld && e.path.as_str() == "gone.txt")
+    );
+}
+
+#[test]
+fn preview_partial_sample_never_infers_deletes() {
+    let h = harness();
+    h.apply(&[
+        file("A", "R", "a.txt", b"1", "e"),
+        file("B", "R", "b.txt", b"2", "e"),
+    ]);
+    let known = h.known();
+    let sample = [file("A", "R", "a.txt", b"1", "e")]; // B simply wasn't sampled
+    let r = crate::preview::preview(&crate::preview::PreviewInput {
+        tree: h.tree.as_ref(),
+        ignore: &h.ctx.ignore,
+        local_root: Path::new(ROOT),
+        remote_root: &RemoteItemId::new("R"),
+        known: &known,
+        changes: &sample,
+        full: true,
+        partial: true,
+        hash: true,
+        mass_delete_threshold: 200,
+    })
+    .unwrap();
+    assert!(r.partial && !r.full);
+    assert!(
+        r.is_empty(),
+        "nothing to do, and b.txt must not be reported as deleted: {:?}",
+        r.entries
     );
 }
