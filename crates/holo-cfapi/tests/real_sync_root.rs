@@ -120,6 +120,19 @@ fn end_to_end_on_real_driver() {
     root::register(&t.spec).expect("register");
     assert!(root::is_registered(&t.spec).unwrap());
 
+    // --- ownership detection --------------------------------------------------
+    assert_eq!(
+        root::owner(&dir.join("not-yet")).unwrap().as_deref(),
+        Some("HoloFilesTest")
+    );
+    assert_eq!(root::owner(dir.parent().unwrap()).unwrap(), None);
+    if let Ok(od) = std::env::var("OneDrive") {
+        eprintln!(
+            "official OneDrive folder {od} owned by {:?}",
+            root::owner(Path::new(&od)).unwrap()
+        );
+    }
+
     let handler = Arc::new(TestHandler::default());
     let _conn = root::connect(&dir, handler.clone(), 0).expect("connect");
 

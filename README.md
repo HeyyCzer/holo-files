@@ -65,6 +65,24 @@ holo remove-root D:\OneDrive\Teste --yes
 
 > Comece com uma **pasta de teste** (`--remote /holo-test`), não com o drive inteiro.
 
+### Dry run (`holo plan`)
+
+Compara nuvem × pasta local × último sync e lista o que seria feito, com a direção,
+**sem alterar nada** (nem disco, nem banco, nem nuvem). Usa as mesmas funções de decisão do sync real.
+
+```powershell
+holo plan D:\Holo --remote /            # antes do add-root: preview do primeiro sync (cold start)
+holo plan D:\Holo                       # root existente: mudanças desde o último sync
+holo plan D:\Holo --full                # root existente: comparação completa
+holo plan D:\Holo --no-hash             # não lê arquivos locais (mais rápido; marca "unverified")
+holo plan D:\Holo --json plano.json --limit 0
+```
+
+Legenda: `↓` nuvem→PC, `↑` PC→nuvem, `⇄` conflito (os dois lados), `·` sem transferência agora
+(placeholder, link, mover). O resumo mostra quanto trafega já e quanto fica disponível sob demanda.
+
+> No Git Bash, use `MSYS_NO_PATHCONV=1` ou o PowerShell: o Bash converte `--remote /` em `C:/Program Files/Git/`.
+
 ## Segurança dos dados
 
 - Exclusões remotas vão para a lixeira do OneDrive; o conteúdo local hidratado de itens apagados
@@ -93,5 +111,6 @@ renomeia e apaga, e confere as notificações.
 - Sessão de upload grande retoma dentro do processo, mas não depois de um crash (recomeça).
 - Contas business usam delta da raiz do drive inteiro (o Graph não suporta delta por pasta lá).
 - Sem tray, sem IPC e sem autostart: `holo run` roda em foreground.
+- `holo add-root`/`plan` recusam pastas que já são sync root de outro provedor (ex.: OneDrive oficial).
 - Itens compartilhados ("Adicionar ao meu OneDrive") e pacotes OneNote são ignorados.
 - Hash não é validado após a hidratação (só tamanho/TLS).

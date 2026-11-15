@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod misc;
+pub mod plan;
 pub mod roots;
 pub mod run;
 

@@ -8,11 +8,17 @@ use std::{
 
 use anyhow::Context as _;
 use holo_cfapi::PlaceholderSpec;
-use holo_core::{ChangeCursor, ProviderError, RelPath, RemoteItem, RemoteItemId, naming};
+use holo_core::{
+    ChangeCursor, CloudProvider, ProviderError, RelPath, RemoteItem, RemoteItemId, naming,
+};
 use holo_state::ItemRecord;
 
 use crate::{
     context::RootContext,
+    decide::{
+        ContentOutcome, CreateOutcome, DeleteOutcome, decide_content, decide_create,
+        decide_delete_file, identity,
+    },
     ops::{self, LocalOp},
     plan::{self, RemoteAction},
 };
@@ -30,27 +36,39 @@ pub fn spec(item: &RemoteItem) -> PlaceholderSpec {
     }
 }
 
-/// Fetch all pending remote changes and apply them. Returns the number of changes seen.
-pub async fn pull(ctx: &Arc<RootContext>) -> anyhow::Result<usize> {
-    let root = ctx.state.root(ctx.id())?.context("root no longer exists")?;
-    let mut cursor = root.cursor.map(ChangeCursor);
+/// Remote changes since `cursor` (or a full enumeration when `None`).
+pub struct Fetched {
+    pub changes: Vec<RemoteItem>,
+    /// Position to persist once the changes are applied.
+    pub cursor: Option<ChangeCursor>,
+    /// `changes` is a complete listing (first sync, or the cursor expired).
+    pub full: bool,
+}
+
+/// Page through the change feed until caught up. Read-only: persists nothing.
+pub async fn fetch_changes(
+    provider: &dyn CloudProvider,
+    scope: &RemoteItemId,
+    cursor: Option<ChangeCursor>,
+) -> anyhow::Result<Fetched> {
+    let mut cursor = cursor;
     let mut full = cursor.is_none();
     let mut changes = Vec::new();
     loop {
-        match ctx
-            .provider
-            .changes(ctx.remote_root(), cursor.as_ref())
-            .await
-        {
+        match provider.changes(scope, cursor.as_ref()).await {
             Ok(batch) => {
                 changes.extend(batch.items);
                 cursor = Some(batch.cursor);
                 if !batch.has_more {
-                    break;
+                    return Ok(Fetched {
+                        changes,
+                        cursor,
+                        full,
+                    });
                 }
             }
             Err(ProviderError::ResyncRequired) => {
-                tracing::warn!(root = ctx.id(), "change cursor expired; re-enumerating");
+                tracing::warn!("change cursor expired; re-enumerating");
                 cursor = None;
                 full = true;
                 changes.clear();
@@ -58,6 +76,21 @@ pub async fn pull(ctx: &Arc<RootContext>) -> anyhow::Result<usize> {
             Err(e) => return Err(e.into()),
         }
     }
+}
+
+/// Fetch all pending remote changes and apply them. Returns the number of changes seen.
+pub async fn pull(ctx: &Arc<RootContext>) -> anyhow::Result<usize> {
+    let root = ctx.state.root(ctx.id())?.context("root no longer exists")?;
+    let Fetched {
+        changes,
+        cursor,
+        full,
+    } = fetch_changes(
+        ctx.provider.as_ref(),
+        ctx.remote_root(),
+        root.cursor.map(ChangeCursor),
+    )
+    .await?;
 
     let n = changes.len();
     if n > 0 || full {
@@ -113,12 +146,6 @@ pub fn apply(ctx: &RootContext, changes: &[RemoteItem], full: bool) -> anyhow::R
     Ok(())
 }
 
-fn identity_of(st: &holo_cfapi::LocalState) -> Option<RemoteItemId> {
-    st.identity()
-        .and_then(|b| std::str::from_utf8(b).ok())
-        .map(RemoteItemId::new)
-}
-
 fn apply_action(
     ctx: &RootContext,
     action: &RemoteAction,
@@ -158,7 +185,7 @@ fn clear_occupant(
     let Some(st) = ctx.tree.state(&local)? else {
         return Ok(());
     };
-    if let Some(id) = identity_of(&st)
+    if let Some(id) = identity(&st)
         && deleting.contains(&id)
     {
         remove_local(ctx, &local, path)?;
@@ -199,43 +226,31 @@ fn create(
     }
     let record = ItemRecord::from_remote(ctx.id(), item, path.clone());
 
-    if let Some(st) = ctx.tree.state(&local)? {
-        if identity_of(&st).as_ref() == Some(&item.id) {
-            // Already there (re-applied after a crash).
+    let st = ctx.tree.state(&local)?;
+    let outcome = decide_create(st.as_ref(), item, deleting, |algo| {
+        ctx.tree.hash(&local, algo)
+    })?;
+    match outcome {
+        CreateOutcome::AlreadyLinked => {
             ctx.state.upsert_item(&record)?;
             return Ok(());
         }
-        if st.is_dir && item.is_dir() && identity_of(&st).is_none() {
-            // Same folder on both sides (e.g. first sync over existing files): merge.
+        CreateOutcome::MergeFolder | CreateOutcome::LinkIdentical => {
             ctx.tree
                 .mark_synced(&local, item.id.as_str().as_bytes(), None)?;
             ctx.state.upsert_item(&record)?;
             return Ok(());
         }
-        if !st.is_dir
-            && !item.is_dir()
-            && identity_of(&st).is_none()
-            && same_content(ctx, &local, item)?
-        {
-            ctx.tree
-                .mark_synced(&local, item.id.as_str().as_bytes(), None)?;
-            ctx.state.upsert_item(&record)?;
-            return Ok(());
+        CreateOutcome::ReplaceStale | CreateOutcome::Conflict => {
+            clear_occupant(ctx, path, deleting)?;
         }
-        clear_occupant(ctx, path, deleting)?;
+        CreateOutcome::Placeholder => {}
     }
 
     ctx.tree
         .create_placeholder(&parent, path.name(), &spec(item))?;
     ctx.state.upsert_item(&record)?;
     Ok(())
-}
-
-fn same_content(ctx: &RootContext, local: &Path, item: &RemoteItem) -> anyhow::Result<bool> {
-    let Some(remote) = &item.hash else {
-        return Ok(false);
-    };
-    Ok(ctx.tree.hash(local, remote.algo)?.as_ref() == Some(remote))
 }
 
 fn change(
@@ -271,13 +286,13 @@ fn change(
 
     if content && !item.is_dir() {
         let local = ctx.local(to);
-        match ctx.tree.state(&local)? {
-            None => {
-                let parent = ctx.local(&to.parent().unwrap_or_default());
+        let parent = ctx.local(&to.parent().unwrap_or_default());
+        match decide_content(ctx.tree.state(&local)?.as_ref()) {
+            ContentOutcome::Recreate => {
                 ctx.tree
                     .create_placeholder(&parent, to.name(), &spec(item))?;
             }
-            Some(st) if !st.needs_upload() => {
+            ContentOutcome::Refresh { .. } => {
                 if ctx.tree.update_placeholder(&local, &spec(item), true)? {
                     // Pinned ("always keep on this device"): fetch the new version now.
                     let tree = ctx.tree.clone();
@@ -288,10 +303,8 @@ fn change(
                     });
                 }
             }
-            Some(_) => {
-                // Edited on both sides.
+            ContentOutcome::Conflict => {
                 move_aside(ctx, to)?;
-                let parent = ctx.local(&to.parent().unwrap_or_default());
                 ctx.tree
                     .create_placeholder(&parent, to.name(), &spec(item))?;
             }
@@ -320,12 +333,11 @@ fn remove_local(ctx: &RootContext, local: &Path, rel: &RelPath) -> anyhow::Resul
         }
         return Ok(());
     }
-    match &st.placeholder {
-        Some(p) if p.in_sync && p.partial => ctx.tree.remove_file(local)?,
-        // Fully local, unchanged: keep a copy in the holo trash just in case.
-        Some(p) if p.in_sync => ctx.tree.trash(local, &ctx.cfg.trash_dir)?,
-        _ if ctx.is_ignored(rel, false) => {}
-        _ => {
+    match decide_delete_file(&st, ctx.is_ignored(rel, false)) {
+        DeleteOutcome::Remove => ctx.tree.remove_file(local)?,
+        DeleteOutcome::Trash => ctx.tree.trash(local, &ctx.cfg.trash_dir)?,
+        DeleteOutcome::Skip => {}
+        DeleteOutcome::KeepAndReupload => {
             ctx.tree.detach(local)?;
             tracing::warn!(path = %rel, "deleted remotely but changed locally; re-uploading");
             ops::enqueue(ctx, &LocalOp::Upload { path: rel.clone() })?;

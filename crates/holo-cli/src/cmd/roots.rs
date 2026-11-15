@@ -34,7 +34,7 @@ pub fn sync_root_spec(
     }
 }
 
-fn validate_local(ctx: &Ctx, local: &Path) -> anyhow::Result<PathBuf> {
+pub fn validate_local(ctx: &Ctx, local: &Path) -> anyhow::Result<PathBuf> {
     let local = std::path::absolute(local)?;
     let s = local.to_string_lossy().to_lowercase();
     if let Ok(tmp) = std::env::var("TEMP")
@@ -50,6 +50,17 @@ fn validate_local(ctx: &Ctx, local: &Path) -> anyhow::Result<PathBuf> {
         {
             bail!("overlaps existing sync root {}", r.local_path);
         }
+    }
+    #[cfg(windows)]
+    match holo_cfapi::root::owner(&local)? {
+        Some(owner) if owner == PROVIDER_NAME => {
+            bail!("{} is already inside a holo sync root", local.display())
+        }
+        Some(owner) => bail!(
+            "{} is inside a sync root managed by '{owner}' (e.g. the official OneDrive client). Unlink that client from this folder first, or pick a folder outside it.",
+            local.display()
+        ),
+        None => {}
     }
     Ok(local)
 }

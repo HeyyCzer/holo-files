@@ -19,6 +19,35 @@ fn root_id(spec: &SyncRootSpec) -> io::Result<SyncRootId> {
         .build())
 }
 
+/// Provider name of the Cloud Filter sync root containing `path` (e.g. `OneDrive`),
+/// or `None` if it is not inside any. Missing paths are checked via their nearest
+/// existing ancestor.
+pub fn owner(path: &Path) -> io::Result<Option<String>> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    use cloud_filter::ext::FileExt;
+
+    let mut p = path;
+    while !p.exists() {
+        match p.parent() {
+            Some(parent) => p = parent,
+            None => return Ok(None),
+        }
+    }
+    let f = std::fs::OpenOptions::new()
+        .access_mode(0x80) // FILE_READ_ATTRIBUTES
+        .custom_flags(0x0200_0000) // FILE_FLAG_BACKUP_SEMANTICS
+        .open(p)?;
+    match f.sync_root_info() {
+        Ok(info) => Ok(info.map(|i| i.provider_name().to_string_lossy())),
+        // The Cloud Files filter isn't attached to volumes without any sync root yet.
+        Err(e) if e.code() == windows::Win32::Foundation::ERROR_INVALID_FUNCTION.to_hresult() => {
+            Ok(None)
+        }
+        Err(e) => Err(win_err(e)),
+    }
+}
+
 pub fn is_supported() -> bool {
     cloud_filter::root::is_supported().unwrap_or(false)
 }

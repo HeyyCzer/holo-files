@@ -1019,3 +1019,151 @@ fn classify_handles_pins_and_ignores() {
             .is_empty()
     );
 }
+
+// ------------------------------------------------------------------- preview
+
+fn run_preview(
+    h: &Harness,
+    changes: &[RemoteItem],
+    full: bool,
+    hash: bool,
+    threshold: usize,
+) -> crate::preview::Report {
+    let known = h.known();
+    crate::preview::preview(&crate::preview::PreviewInput {
+        tree: h.tree.as_ref(),
+        ignore: &h.ctx.ignore,
+        local_root: Path::new(ROOT),
+        remote_root: &RemoteItemId::new("R"),
+        known: &known,
+        changes,
+        full,
+        hash,
+        mass_delete_threshold: threshold,
+    })
+    .unwrap()
+}
+
+fn kinds(r: &crate::preview::Report) -> Vec<(crate::preview::Kind, String)> {
+    r.entries
+        .iter()
+        .map(|e| (e.kind, e.path.as_str().to_owned()))
+        .collect()
+}
+
+#[test]
+fn preview_cold_start_into_existing_folder_changes_nothing() {
+    use crate::preview::Kind::*;
+    let h = harness();
+    h.tree.local_file("same.txt", b"abc");
+    h.tree.local_file("diff.txt", b"local");
+    h.tree.local_file("only-local.txt", b"12345");
+    h.tree.put(&h.ctx.local(&rp("docs")), true, b"", None);
+    h.tree.local_file("docs/new.md", b"#");
+    h.tree
+        .put(&h.ctx.local(&rp("node_modules")), true, b"", None);
+    h.tree.local_file("node_modules/x.js", b"1");
+    let remote = [
+        folder("R", "", "root"),
+        file("S", "R", "same.txt", b"abc", "e"),
+        file("D", "R", "diff.txt", b"remote!", "e"),
+        folder("DOCS", "R", "docs"),
+        file("P", "DOCS", "remote.pdf", &[0; 100], "e"),
+        file("B", "R", "big.iso", &[0; 1000], "e"),
+    ];
+    let before = h.tree.names();
+
+    let r = run_preview(&h, &remote, true, true, 200);
+    assert_eq!(
+        kinds(&r),
+        vec![
+            (Placeholder, "big.iso".into()),
+            (Placeholder, "docs/remote.pdf".into()),
+            (Link, "same.txt".into()),
+            (MergeFolder, "docs".into()),
+            (Upload, "docs/new.md".into()),
+            (Upload, "only-local.txt".into()),
+            (Conflict, "diff.txt".into()),
+        ]
+    );
+    assert_eq!(r.network(), (0, 1 + 5 + 5), "only uploads move bytes now");
+    assert_eq!(r.on_demand(), 1100);
+    assert_eq!(h.tree.names(), before, "dry run must not touch the tree");
+    assert!(h.known().is_empty(), "dry run must not touch the database");
+    assert!(h.ctx.state.ops(None).unwrap().is_empty());
+
+    let unverified = run_preview(&h, &remote, true, false, 200);
+    assert!(
+        unverified
+            .entries
+            .iter()
+            .any(|e| e.kind == Unverified && e.path.as_str() == "same.txt")
+    );
+}
+
+#[test]
+fn preview_incremental_reports_both_directions() {
+    use crate::preview::Kind::*;
+    let h = harness();
+    h.apply(&[
+        file("E", "R", "edited.txt", b"v1", "e"),
+        file("G", "R", "gone.txt", b"x", "e"),
+        file("K", "R", "keep.txt", b"k", "e"),
+        file("P", "R", "pinned.bin", b"p1", "e"),
+        file("M", "R", "old-name.txt", b"m", "e"),
+    ]);
+    // Local: edit, delete, edit-before-remote-delete, pinned+hydrated.
+    h.tree
+        .with(&h.ctx.local(&rp("edited.txt")), |n| {
+            n.content = b"v2".to_vec();
+            n.ph.as_mut().unwrap().in_sync = false;
+            n.ph.as_mut().unwrap().partial = false;
+        })
+        .unwrap();
+    h.tree.remove_file(&h.ctx.local(&rp("gone.txt"))).unwrap();
+    h.tree
+        .with(&h.ctx.local(&rp("keep.txt")), |n| {
+            n.ph.as_mut().unwrap().in_sync = false
+        })
+        .unwrap();
+    h.tree.hydrate(&h.ctx.local(&rp("pinned.bin"))).unwrap();
+    h.tree
+        .set_pin(&h.ctx.local(&rp("pinned.bin")), PinState::Pinned)
+        .unwrap();
+
+    let remote = [
+        deleted("K"),
+        file("P", "R", "pinned.bin", b"p2-new", "e2"),
+        file("M", "R", "new-name.txt", b"m", "e"),
+    ];
+    let r = run_preview(&h, &remote, false, true, 200);
+    assert_eq!(
+        kinds(&r),
+        vec![
+            (Redownload, "pinned.bin".into()),
+            (MoveLocal, "new-name.txt".into()),
+            (UploadReplace, "edited.txt".into()),
+            (KeepAndReupload, "keep.txt".into()),
+            (DeleteRemote, "gone.txt".into()),
+        ]
+    );
+    assert_eq!(
+        r.entries
+            .iter()
+            .find(|e| e.kind == MoveLocal)
+            .unwrap()
+            .from
+            .as_ref()
+            .unwrap()
+            .as_str(),
+        "old-name.txt"
+    );
+
+    // Over the threshold, remote deletes are reported as held.
+    let r = run_preview(&h, &[], false, true, 0);
+    assert!(
+        r.entries
+            .iter()
+            .any(|e| e.kind == DeleteRemoteHeld && e.path.as_str() == "gone.txt")
+    );
+}
