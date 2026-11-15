@@ -57,7 +57,7 @@ pub fn validate_local(ctx: &Ctx, local: &Path) -> anyhow::Result<PathBuf> {
             bail!("{} is already inside a holo sync root", local.display())
         }
         Some(owner) => bail!(
-            "{} is inside a sync root managed by '{owner}' (e.g. the official OneDrive client).              Unlink that client from this folder first, or pick a folder outside it.",
+            "{} is inside a sync root managed by '{owner}' (e.g. the official OneDrive client). Unlink that client from this folder first, or pick a folder outside it.",
             local.display()
         ),
         None => {}

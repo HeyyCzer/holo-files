@@ -57,6 +57,31 @@ enum Command {
     },
     /// List sync roots.
     Roots,
+    /// Dry run: compare cloud, local folder and last sync; list what would change.
+    ///
+    /// For an existing root pass its path or id. Before `add-root`, pass the local
+    /// folder plus `--remote` to preview the first sync (cold start).
+    Plan {
+        /// Sync root (path or id), or a local folder together with --remote.
+        target: String,
+        /// Remote folder for a root not added yet (cold-start preview).
+        #[arg(long)]
+        remote: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+        /// Compare against a full remote listing instead of changes since last sync.
+        #[arg(long)]
+        full: bool,
+        /// Don't hash same-name local files (faster; those show as "unverified").
+        #[arg(long)]
+        no_hash: bool,
+        /// Write the full plan as JSON.
+        #[arg(long)]
+        json: Option<PathBuf>,
+        /// Max detail lines to print (0 = all).
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
     /// Run the sync engine in the foreground (Ctrl+C to stop).
     Run,
     /// Show per-root sync status.
@@ -136,6 +161,29 @@ async fn main() -> anyhow::Result<()> {
         } => cmd::roots::add(&ctx, &local, &remote, account.as_deref()).await,
         Command::RemoveRoot { root, yes } => cmd::roots::remove(&ctx, &root, yes),
         Command::Roots => cmd::roots::list(&ctx),
+        Command::Plan {
+            target,
+            remote,
+            account,
+            full,
+            no_hash,
+            json,
+            limit,
+        } => {
+            cmd::plan::plan(
+                &ctx,
+                cmd::plan::PlanArgs {
+                    target: &target,
+                    remote: remote.as_deref(),
+                    account: account.as_deref(),
+                    full,
+                    no_hash,
+                    json: json.as_deref(),
+                    limit,
+                },
+            )
+            .await
+        }
         Command::Run => cmd::run::run(&ctx).await,
         Command::Status => cmd::misc::status(&ctx),
         Command::Ops { action } => cmd::misc::ops(&ctx, action.unwrap_or(OpsAction::List)),
