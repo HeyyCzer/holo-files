@@ -79,17 +79,33 @@ pub fn pull_line(ctx: &Ctx, root_id: &str) -> anyhow::Result<Option<String>> {
     };
     let secs = (chrono::Utc::now().timestamp_millis() - p.started_ms).max(0) / 1000;
     let what = if p.full { "full listing" } else { "changes" };
+    let mut est = String::new();
+    if let Some(pct) = p.percent() {
+        est.push_str(&format!(" · ~{pct}%"));
+    }
+    if let Some(eta) = p.eta_secs(secs as f64) {
+        est.push_str(&format!(" · ETA ~{}", fmt_secs(eta)));
+    }
+    let took = fmt_secs(secs as u64);
     Ok(match p.phase {
         PullPhase::Idle => None,
         PullPhase::Listing => Some(format!(
-            "cloud: {what} · {} items in {} pages · {secs}s",
+            "cloud: {what} · {} items in {} pages{est} · {took}",
             p.items, p.pages
         )),
         PullPhase::Applying => Some(format!(
-            "cloud: applying {} items locally · {secs}s",
+            "cloud: applying {} items locally · {took}",
             p.items
         )),
     })
+}
+
+fn fmt_secs(s: u64) -> String {
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m{:02}s", s / 60, s % 60),
+        _ => format!("{}h{:02}m", s / 3600, s / 60 % 60),
+    }
 }
 
 /// `holo run` holds the lock file exclusively while it runs.

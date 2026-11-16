@@ -51,34 +51,54 @@ pub struct Fetched {
 }
 
 /// Page through the change feed until caught up. Read-only: persists nothing.
+/// Running totals while listing the change feed.
+#[derive(Debug, Clone, Copy)]
+pub struct Listed {
+    pub items: usize,
+    pub pages: usize,
+    /// Sum of file sizes received so far (folders excluded: their size is recursive).
+    pub bytes: u64,
+}
+
 pub async fn fetch_changes(
     provider: &dyn CloudProvider,
     scope: &RemoteItemId,
     cursor: Option<ChangeCursor>,
 ) -> anyhow::Result<Fetched> {
-    fetch_changes_with(provider, scope, cursor, None, |_, _| {}).await
+    fetch_changes_with(provider, scope, cursor, None, |_| {}).await
 }
 
 /// Like [`fetch_changes`], but stops after `max_items` items (a sample) and reports
-/// progress as `(items_so_far, pages_so_far)` after every page.
+/// progress after every page.
 pub async fn fetch_changes_with(
     provider: &dyn CloudProvider,
     scope: &RemoteItemId,
     cursor: Option<ChangeCursor>,
     max_items: Option<usize>,
-    mut progress: impl FnMut(usize, usize),
+    mut progress: impl FnMut(Listed),
 ) -> anyhow::Result<Fetched> {
     let mut cursor = cursor;
     let mut full = cursor.is_none();
     let mut changes = Vec::new();
     let mut pages = 0;
+    let mut bytes = 0u64;
     loop {
         match provider.changes(scope, cursor.as_ref()).await {
             Ok(batch) => {
+                bytes += batch
+                    .items
+                    .iter()
+                    .filter(|i| !i.deleted && !i.is_dir())
+                    .map(|i| i.size)
+                    .sum::<u64>();
                 changes.extend(batch.items);
                 cursor = Some(batch.cursor);
                 pages += 1;
-                progress(changes.len(), pages);
+                progress(Listed {
+                    items: changes.len(),
+                    pages,
+                    bytes,
+                });
                 if !batch.has_more {
                     return Ok(Fetched {
                         changes,
@@ -105,6 +125,7 @@ pub async fn fetch_changes_with(
                 full = true;
                 changes.clear();
                 pages = 0;
+                bytes = 0;
             }
             Err(e) => return Err(e.into()),
         }
@@ -121,6 +142,12 @@ pub struct PullProgress {
     pub pages: usize,
     /// True when enumerating everything (initial sync or expired cursor).
     pub full: bool,
+    /// Full listing only: bytes of files seen vs. the remote folder's recursive size
+    /// (0 when unknown). An estimate: pages don't come ordered by size.
+    #[serde(default)]
+    pub bytes: u64,
+    #[serde(default)]
+    pub total_bytes: u64,
     pub started_ms: i64,
     pub updated_ms: i64,
 }
@@ -132,6 +159,24 @@ pub enum PullPhase {
     Idle,
     Listing,
     Applying,
+}
+
+impl PullProgress {
+    /// Estimated listing progress, capped at 99 until the listing ends.
+    pub fn percent(&self) -> Option<u8> {
+        (self.full && self.total_bytes > 0).then(|| {
+            ((self.bytes as f64 / self.total_bytes as f64) * 100.0).min(99.0) as u8
+        })
+    }
+
+    /// Remaining time from the byte rate so far, once there is enough signal.
+    pub fn eta_secs(&self, elapsed_secs: f64) -> Option<u64> {
+        let pct = self.percent()?;
+        (pct >= 2 && elapsed_secs >= 5.0).then(|| {
+            let frac = self.bytes as f64 / self.total_bytes as f64;
+            (elapsed_secs * (1.0 - frac) / frac).max(0.0) as u64
+        })
+    }
 }
 
 pub fn pull_key(root_id: &str) -> String {
@@ -166,6 +211,12 @@ async fn pull_inner(ctx: &Arc<RootContext>, progress: &mut PullProgress) -> anyh
         tracing::info!(root = ctx.id(), remote = %root.remote_path, "full cloud listing started");
     }
     let full_listing = progress.full;
+    if full_listing {
+        match ctx.provider.item(ctx.remote_root()).await {
+            Ok(item) => progress.total_bytes = item.size,
+            Err(e) => tracing::debug!(root = ctx.id(), error = %e, "remote folder size unavailable"),
+        }
+    }
     let Fetched {
         changes,
         cursor,
@@ -176,11 +227,18 @@ async fn pull_inner(ctx: &Arc<RootContext>, progress: &mut PullProgress) -> anyh
         ctx.remote_root(),
         root.cursor.map(ChangeCursor),
         None,
-        |items, pages| {
-            progress.items = items;
-            progress.pages = pages;
-            if full_listing && pages % 25 == 0 {
-                tracing::info!(root = ctx.id(), items, pages, "cloud listing in progress");
+        |l| {
+            progress.items = l.items;
+            progress.pages = l.pages;
+            progress.bytes = l.bytes;
+            if full_listing && l.pages % 25 == 0 {
+                tracing::info!(
+                    root = ctx.id(),
+                    items = l.items,
+                    pages = l.pages,
+                    percent = progress.percent(),
+                    "cloud listing in progress"
+                );
             }
             publish_pull(ctx, progress);
         },
@@ -443,4 +501,40 @@ fn remove_local(ctx: &RootContext, local: &Path, rel: &RelPath) -> anyhow::Resul
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod pull_progress_tests {
+    use super::PullProgress;
+
+    fn p(full: bool, bytes: u64, total: u64) -> PullProgress {
+        PullProgress {
+            full,
+            bytes,
+            total_bytes: total,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn percent_needs_full_listing_and_known_total() {
+        assert_eq!(p(false, 50, 100).percent(), None);
+        assert_eq!(p(true, 50, 0).percent(), None);
+        assert_eq!(p(true, 25, 100).percent(), Some(25));
+    }
+
+    #[test]
+    fn percent_caps_at_99() {
+        assert_eq!(p(true, 100, 100).percent(), Some(99));
+        assert_eq!(p(true, 150, 100).percent(), Some(99));
+    }
+
+    #[test]
+    fn eta_from_byte_rate() {
+        // 25% in 10s -> 30s left.
+        assert_eq!(p(true, 25, 100).eta_secs(10.0), Some(30));
+        // Too early to tell.
+        assert_eq!(p(true, 25, 100).eta_secs(2.0), None);
+        assert_eq!(p(true, 1, 100).eta_secs(10.0), None);
+    }
 }

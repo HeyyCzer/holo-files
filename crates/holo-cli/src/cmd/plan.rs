@@ -111,11 +111,13 @@ pub async fn plan(ctx: &Ctx, a: PlanArgs<'_>) -> anyhow::Result<()> {
         &remote_root,
         cursor,
         a.sample,
-        |items, pages| {
+        |l| {
             let secs = started.elapsed().as_secs_f64().max(0.1);
             eprint!(
-                "\rListing cloud… {items} items, {pages} pages, {:.0} items/s   ",
-                items as f64 / secs
+                "\rListing cloud… {} items, {} pages, {:.0} items/s   ",
+                l.items,
+                l.pages,
+                l.items as f64 / secs
             );
         },
     )
