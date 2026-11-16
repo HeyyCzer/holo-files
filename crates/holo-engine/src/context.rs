@@ -57,6 +57,11 @@ impl RootContext {
         RelPath::from_local(&self.local_root, path)
     }
 
+    /// Sync paused by the user (`holo pause` / tray). Hydration keeps working.
+    pub fn paused(&self) -> bool {
+        is_paused(&self.state)
+    }
+
     /// Current ignore rules.
     pub fn ignore_rules(&self) -> Arc<IgnoreRules> {
         self.ignore
@@ -151,6 +156,17 @@ impl RootContext {
             );
         }
     }
+}
+
+/// kv key: "1" while sync is paused (all roots).
+pub const PAUSED_KEY: &str = "paused";
+
+pub fn is_paused(state: &StateStore) -> bool {
+    state.kv_get(PAUSED_KEY).ok().flatten().as_deref() == Some("1")
+}
+
+pub fn set_paused(state: &StateStore, paused: bool) -> holo_state::StateResult<()> {
+    state.kv_set(PAUSED_KEY, if paused { "1" } else { "0" })
 }
 
 /// Whether `rel` is a `.holoignore` file name.

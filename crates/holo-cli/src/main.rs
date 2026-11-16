@@ -1,14 +1,11 @@
-mod cmd;
-mod config;
-mod load;
-mod providers;
-
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use holo_cli::{
+    OpsAction, ServiceAction, StreamArgs, cmd,
+    config::{Config, Paths},
+};
 use holo_core::ProviderKind;
-
-use crate::config::{Config, Paths};
 
 #[derive(Parser)]
 #[command(
@@ -109,49 +106,14 @@ enum Command {
         #[command(subcommand)]
         action: ServiceAction,
     },
+    /// Pause syncing (all roots). Files still open on demand.
+    Pause,
+    /// Resume syncing after `holo pause`.
+    Resume,
     /// "Always keep on this device" for a file or folder.
     Pin { path: PathBuf },
     /// "Free up space": keep only in the cloud.
     Free { path: PathBuf },
-}
-
-#[derive(Subcommand)]
-pub enum ServiceAction {
-    /// Register the logon task (and start it now unless --no-start).
-    Install {
-        #[arg(long)]
-        no_start: bool,
-    },
-    /// Stop the daemon and remove the logon task.
-    Uninstall,
-    /// Start the daemon now through the task.
-    Start,
-    /// Ask the running daemon to shut down cleanly.
-    Stop,
-    /// Show whether the task is installed and the daemon is running.
-    Status,
-}
-
-#[derive(clap::Args, Clone, Copy)]
-pub struct StreamArgs {
-    /// Keep watching and print changes as they happen (Ctrl+C to stop).
-    #[arg(long)]
-    pub stream: bool,
-    /// Poll interval for --stream, in milliseconds.
-    #[arg(long, default_value_t = 1000, requires = "stream")]
-    pub interval: u64,
-}
-
-#[derive(Subcommand)]
-pub enum OpsAction {
-    /// List queued operations (default).
-    List,
-    /// Allow held operations (e.g. after the mass-delete guard) to run.
-    Release,
-    /// Drop held operations.
-    Discard,
-    /// Re-queue permanently failed operations.
-    Retry,
 }
 
 fn init_logging(
@@ -238,6 +200,19 @@ async fn main() -> anyhow::Result<()> {
             cmd::misc::ops(&ctx, action.unwrap_or(OpsAction::List), stream).await
         }
         Command::Service { action } => cmd::service::service(&ctx, action).await,
+        Command::Pause | Command::Resume => {
+            let pause = matches!(cli.command, Command::Pause);
+            holo_engine::context::set_paused(&ctx.state, pause)?;
+            println!(
+                "{}",
+                if pause {
+                    "Sync paused (files still open on demand). `holo resume` to continue."
+                } else {
+                    "Sync resumed."
+                }
+            );
+            Ok(())
+        }
         Command::Pin { path } => cmd::misc::pin(&path, true),
         Command::Free { path } => cmd::misc::pin(&path, false),
     }

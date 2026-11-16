@@ -19,6 +19,9 @@ use crate::{
     local, ops, remote,
 };
 
+/// How often a paused root checks whether it was resumed.
+const PAUSE_CHECK: std::time::Duration = std::time::Duration::from_secs(2);
+
 pub struct RootHandle {
     pub ctx: Arc<RootContext>,
     shutdown: watch::Sender<bool>,
@@ -93,6 +96,12 @@ pub async fn start_root(
         let mut shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
             loop {
+                if ctx.paused() {
+                    tokio::select! {
+                        _ = tokio::time::sleep(PAUSE_CHECK) => continue,
+                        _ = shutdown.changed() => return,
+                    }
+                }
                 // A full listing can take minutes; don't make shutdown wait for it
                 // (the cursor is only saved after a complete pull).
                 let pulled = tokio::select! {

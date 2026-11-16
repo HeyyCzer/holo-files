@@ -89,6 +89,9 @@ pub struct ExecProgress {
     pub auto: bool,
     #[serde(default)]
     pub workers_reason: String,
+    /// Sync paused by the user: running ops finish, no new ones start.
+    #[serde(default)]
+    pub paused: bool,
     /// Unix ms of the last update.
     pub updated_ms: i64,
 }
@@ -175,8 +178,10 @@ pub async fn run(ctx: Arc<RootContext>, mut shutdown: watch::Receiver<bool>) {
             break;
         }
         let workers = control.workers();
+        let paused = ctx.paused();
+        progress.paused = paused;
         // Fill free slots, oldest ops first.
-        if !barrier && tasks.len() < workers {
+        if !paused && !barrier && tasks.len() < workers {
             let started = tasks.len();
             match ctx.state.due_ops(ctx.id(), workers * 4 + running.len()) {
                 Ok(recs) => {
@@ -245,6 +250,7 @@ pub async fn run(ctx: Arc<RootContext>, mut shutdown: watch::Receiver<bool>) {
                 .and_then(|due| (due - Utc::now()).to_std().ok())
                 .unwrap_or(Duration::from_secs(30))
                 .min(Duration::from_secs(30));
+            let wait = if paused { ADAPT_EVERY } else { wait };
             tokio::select! {
                 _ = ctx.wake_ops.notified() => {}
                 _ = tokio::time::sleep(wait) => {}

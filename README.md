@@ -24,7 +24,8 @@ crates/
   holo-gdrive    scaffold do Google Drive (OAuth pronto, métodos NotImplemented)
   holo-cfapi     Files On-Demand: registro do sync root, placeholders, callbacks
   holo-engine    motor de sync (agnóstico de provedor e de filesystem)
-  holo-cli       binário `holo`
+  holo-cli       binário `holo` (+ lib usada pela UI)
+  holo-ui        binário `holo-ui`: ícone na bandeja + janela de status
 ```
 
 Fluxo:
@@ -49,7 +50,7 @@ uploads, exclusões) é testada com um filesystem em memória e um provedor fals
    - plataforma: *Aplicativos móveis e da área de trabalho*, redirect `http://localhost`
    - *Permitir fluxos de cliente público*: **Sim**
    - permissões delegadas: `Files.ReadWrite`, `User.Read`, `offline_access`
-2. Compilar: `cargo build --release` (binário em `target/release/holo.exe`).
+2. Compilar: `cargo build --release` (binários em `target/release/`: `holo.exe` e `holo-ui.exe`, que precisam ficar na mesma pasta).
 3. `holo config` mostra onde fica o `config.toml`. Coloque o *Client ID* em `[onedrive].client_id`.
 4. Usar:
 
@@ -62,12 +63,30 @@ holo service stop|start|status|uninstall     # stop = desligamento limpo
 holo status                                 # --stream: acompanha ao vivo (itens, pending/held/failed com deltas)
 holo ops                                    # journal; `release`/`discard` após o guard de exclusão em massa
 holo ops --stream                           # acompanha o journal ao vivo: + nova, ~ mudou, - concluída/descartada
+holo pause | resume                         # pausa envios e leitura da nuvem (abrir sob demanda continua)
 holo pin  D:\OneDrive\Teste\video.mp4       # sempre manter neste dispositivo
 holo free D:\OneDrive\Teste\video.mp4       # liberar espaço
 holo remove-root D:\OneDrive\Teste --yes
 ```
 
 > Comece com uma **pasta de teste** (`--remote /holo-test`), não com o drive inteiro.
+
+### Interface (`holo-ui`)
+
+`holo-ui.exe` coloca um ícone na bandeja com o estado geral:
+✓ verde sincronizado · ↑ azul sincronizando · ‖ cinza pausado · ! vermelho precisa de atenção
+(falhas ou operações retidas) · ✕ daemon parado. O tooltip mostra quantos envios estão
+rodando e o tamanho da fila.
+
+- **Clique** abre a janela: cada root com itens/fila/retidas/falhas, listagem da nuvem
+  em andamento (%/ETA), ops rodando com tempo decorrido e workers; abaixo, a fila de
+  operações com filtro e os botões *Liberar retidas*, *Descartar retidas* e *Repetir falhas*.
+- **Menu (botão direito)**: abrir pasta, pausar/retomar, iniciar/parar o daemon, logs.
+- *Iniciar com o Windows* (na janela) põe o ícone em `HKCU\…\Run`.
+
+A UI só lê o mesmo banco que o `holo status` e não sincroniza nada. Fechar a janela ou
+sair do ícone não para o daemon. A janela é um processo separado que só existe enquanto
+está aberta; o ícone sozinho usa ~17 MB.
 
 ### Dry run (`holo plan`)
 
@@ -160,7 +179,7 @@ O teste do driver real (`--ignored`) fica fora; para incluí-lo, adicione `-- --
   upload e download do Graph são cobertos só por testes de parsing/unidade.
 - Sessão de upload grande retoma dentro do processo, mas não depois de um crash (recomeça).
 - Contas business usam delta da raiz do drive inteiro (o Graph não suporta delta por pasta lá).
-- Sem tray, sem IPC e sem autostart: `holo run` roda em foreground.
+- Sem IPC: a UI e a CLI conversam com o daemon pelo banco (kv) e pelo evento de parada.
 - `holo add-root`/`plan` recusam pastas que já são sync root de outro provedor (ex.: OneDrive oficial).
 - Itens compartilhados ("Adicionar ao meu OneDrive") e pacotes OneNote são ignorados.
 - Hash não é validado após a hidratação (só tamanho/TLS).

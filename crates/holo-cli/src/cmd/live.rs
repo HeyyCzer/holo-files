@@ -106,9 +106,14 @@ impl Rates {
 fn panel(ctx: &Ctx, rates: &mut Rates) -> anyhow::Result<Vec<String>> {
     let running = daemon_running(ctx);
     let mut out = vec![format!(
-        "holo · {} · daemon {} · Ctrl+C to stop",
+        "holo · {} · daemon {}{} · Ctrl+C to stop",
         chrono::Local::now().format("%H:%M:%S"),
-        if running { "running" } else { "stopped" }
+        if running { "running" } else { "stopped" },
+        if holo_engine::context::is_paused(&ctx.state) {
+            " · PAUSED (`holo resume`)"
+        } else {
+            ""
+        }
     )];
     let roots = ctx.state.roots()?;
     if roots.is_empty() {

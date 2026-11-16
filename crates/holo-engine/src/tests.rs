@@ -1363,3 +1363,36 @@ async fn holoignore_from_the_cloud_is_loaded() {
     remote::apply(&h.ctx, &[f], false).unwrap();
     assert!(h.ctx.is_ignored(&rp("Launcher/a.log"), false));
 }
+
+#[tokio::test]
+async fn paused_executor_starts_nothing_until_resumed() {
+    let h = harness();
+    h.tree.local_file("a.txt", b"a");
+    ops::enqueue(&h.ctx, &LocalOp::Upload { path: rp("a.txt") }).unwrap();
+    crate::context::set_paused(&h.ctx.state, true).unwrap();
+
+    let (stop, rx) = tokio::sync::watch::channel(false);
+    let exec = tokio::spawn(ops::run(h.ctx.clone(), rx));
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(
+        h.ctx.state.ops(None).unwrap().len(),
+        1,
+        "nothing ran while paused"
+    );
+    assert!(h.provider.items.lock().unwrap().is_empty());
+
+    crate::context::set_paused(&h.ctx.state, false).unwrap();
+    h.ctx.wake_ops.notify_one();
+    for _ in 0..300 {
+        if h.ctx.state.ops(None).unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    stop.send(true).unwrap();
+    exec.await.unwrap();
+    assert!(
+        h.ctx.state.ops(None).unwrap().is_empty(),
+        "ran after resume"
+    );
+}

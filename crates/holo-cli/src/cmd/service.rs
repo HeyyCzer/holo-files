@@ -143,7 +143,7 @@ fn status(ctx: &Ctx) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn task_installed() -> bool {
+pub fn task_installed() -> bool {
     Command::new("schtasks")
         .args(["/Query", "/TN", TASK_NAME])
         .output()
