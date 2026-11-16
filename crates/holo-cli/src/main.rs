@@ -135,7 +135,14 @@ fn init_logging(
         .unwrap_or_else(|_| EnvFilter::new(format!("warn,holo_cli={level},holo_engine={level},holo_onedrive={level},holo_cfapi={level},holo_auth={level}")));
     let stderr = fmt::layer().with_target(false).with_writer(std::io::stderr);
     if to_file {
-        let appender = tracing_appender::rolling::daily(paths.logs(), "holo.log");
+        use tracing_appender::rolling::{RollingFileAppender, Rotation};
+        // holo.YYYY-MM-DD.log (em vez de holo.log.YYYY-MM-DD) pra extensão abrir no editor
+        let appender = RollingFileAppender::builder()
+            .rotation(Rotation::DAILY)
+            .filename_prefix("holo")
+            .filename_suffix("log")
+            .build(paths.logs())
+            .expect("falha ao criar o appender de log");
         let (writer, guard) = tracing_appender::non_blocking(appender);
         tracing_subscriber::registry()
             .with(filter)
