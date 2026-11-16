@@ -14,7 +14,7 @@ try {
     $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' |
         Select-Object -First 1).Matches[0].Groups[1].Value
 
-    # holo-ui's build.rs draws the app icon into its OUT_DIR.
+    # holo-ui's build.rs rasterizes assets/icons/holo.svg into its OUT_DIR.
     $icon = Get-ChildItem target\release\build\holo-ui-*\out\holo.ico -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
 

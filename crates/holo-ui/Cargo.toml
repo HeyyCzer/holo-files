@@ -27,6 +27,7 @@ windows = { workspace = true, features = ["Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 embed-resource = "3"
+resvg = { version = "0.50", default-features = false }
 
 [lints]
 workspace = true

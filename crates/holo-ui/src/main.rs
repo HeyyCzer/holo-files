@@ -2,8 +2,9 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod actions;
+#[cfg(test)]
+mod ico;
 mod icon;
-mod icon_draw;
 mod snapshot;
 mod tray;
 mod window;
