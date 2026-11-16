@@ -154,7 +154,7 @@ impl Snapshot {
 pub fn op_target(o: &OpRecord) -> String {
     match serde_json::from_str::<LocalOp>(&o.payload) {
         Ok(LocalOp::Upload { path } | LocalOp::CreateFolder { path }) => path.to_string(),
-        Ok(LocalOp::Move { to, .. }) => format!("→ {to}"),
+        Ok(LocalOp::Move { to, .. }) => format!("mover para {to}"),
         Ok(LocalOp::Delete { path, .. }) => path.to_string(),
         Err(_) => o.payload.clone(),
     }
