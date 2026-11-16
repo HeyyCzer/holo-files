@@ -49,6 +49,8 @@ struct Node {
 struct FakeTree {
     nodes: Mutex<BTreeMap<String, Node>>,
     trashed: Mutex<Vec<PathBuf>>,
+    /// Files another process has open for writing.
+    busy: Mutex<std::collections::HashSet<String>>,
 }
 
 fn key(p: &Path) -> String {
@@ -295,6 +297,17 @@ impl LocalTree for FakeTree {
         self.trashed.lock().unwrap().push(path.into());
         Ok(())
     }
+    fn read_text(&self, path: &Path) -> io::Result<Option<String>> {
+        Ok(self
+            .nodes
+            .lock()
+            .unwrap()
+            .get(&key(path))
+            .map(|n| String::from_utf8_lossy(&n.content).into_owned()))
+    }
+    fn in_use(&self, path: &Path) -> io::Result<bool> {
+        Ok(self.busy.lock().unwrap().contains(&key(path)))
+    }
 }
 
 // -------------------------------------------------------------- fake provider
@@ -518,7 +531,9 @@ fn harness() -> Harness {
         provider: provider.clone(),
         state,
         tree: tree.clone(),
-        ignore: IgnoreRules::from_patterns(holo_core::ignore_rules::DEFAULT_PATTERNS),
+        ignore: std::sync::RwLock::new(Arc::new(IgnoreRules::from_patterns(
+            holo_core::ignore_rules::DEFAULT_PATTERNS,
+        ))),
         cfg,
         suppress: Suppressor::default(),
         wake_remote: Notify::new(),
@@ -1035,7 +1050,7 @@ fn run_preview(
     let known = h.known();
     crate::preview::preview(&crate::preview::PreviewInput {
         tree: h.tree.as_ref(),
-        ignore: &h.ctx.ignore,
+        ignore: &h.ctx.ignore_rules(),
         local_root: Path::new(ROOT),
         remote_root: &RemoteItemId::new("R"),
         known: &known,
@@ -1183,7 +1198,7 @@ fn preview_partial_sample_never_infers_deletes() {
     let sample = [file("A", "R", "a.txt", b"1", "e")]; // B simply wasn't sampled
     let r = crate::preview::preview(&crate::preview::PreviewInput {
         tree: h.tree.as_ref(),
-        ignore: &h.ctx.ignore,
+        ignore: &h.ctx.ignore_rules(),
         local_root: Path::new(ROOT),
         remote_root: &RemoteItemId::new("R"),
         known: &known,
@@ -1256,4 +1271,95 @@ async fn parallel_executor_uploads_everything_and_creates_each_folder_once() {
     .unwrap();
     assert_eq!(progress.done, files.len() as u64);
     assert!(progress.running.is_empty());
+}
+
+// ------------------------------------------------- busy files and .holoignore
+
+#[tokio::test]
+async fn file_open_by_another_process_is_deferred_without_network() {
+    let h = harness();
+    h.tree.local_file("app.log", b"line 1");
+    let path = h.ctx.local(&rp("app.log"));
+    h.tree.busy.lock().unwrap().insert(key(&path));
+
+    let err = ops::execute(
+        &h.ctx,
+        &LocalOp::Upload {
+            path: rp("app.log"),
+        },
+    )
+    .await
+    .unwrap_err();
+    let d = err
+        .downcast_ref::<ops::Defer>()
+        .expect("deferred, not failed");
+    assert!(d.reason.contains("open by another process"), "{}", d.reason);
+    assert!(h.provider.items.lock().unwrap().is_empty(), "nothing sent");
+
+    h.tree.busy.lock().unwrap().clear();
+    ops::execute(
+        &h.ctx,
+        &LocalOp::Upload {
+            path: rp("app.log"),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(h.provider.items.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn new_nested_holoignore_applies_to_queued_and_future_changes() {
+    let h = harness();
+    h.tree.put(&h.ctx.local(&rp("Launcher")), true, b"", None);
+    h.tree.local_file("Launcher/launcher.log", b"x");
+    h.tree.local_file("Launcher/settings.json", b"{}");
+    for p in ["Launcher/launcher.log", "Launcher/settings.json"] {
+        ops::enqueue(&h.ctx, &LocalOp::Upload { path: rp(p) }).unwrap();
+    }
+
+    // The user drops a .holoignore next to the logs; the watcher reports it.
+    h.tree.local_file("Launcher/.holoignore", b"./**/**.log\n");
+    let actions = classify(&h.ctx, &h.ctx.local(&rp("Launcher/.holoignore"))).unwrap();
+    assert_eq!(
+        actions,
+        vec![Classified::Upload(rp("Launcher/.holoignore"))]
+    );
+
+    assert_eq!(
+        h.pending_ops(),
+        vec![LocalOp::Upload {
+            path: rp("Launcher/settings.json")
+        }],
+        "queued upload of the now-ignored log was dropped"
+    );
+    assert!(
+        classify(&h.ctx, &h.ctx.local(&rp("Launcher/launcher.log")))
+            .unwrap()
+            .is_empty()
+    );
+
+    // Deleting the file lifts the rule again.
+    h.tree
+        .remove_file(&h.ctx.local(&rp("Launcher/.holoignore")))
+        .unwrap();
+    h.ctx.reload_ignore_file(&rp("Launcher"));
+    assert!(!h.ctx.is_ignored(&rp("Launcher/launcher.log"), false));
+}
+
+#[tokio::test]
+async fn holoignore_from_the_cloud_is_loaded() {
+    let h = harness();
+    h.apply(&[folder("L", "R", "Launcher")]);
+    h.tree.local_file("Launcher/.holoignore", b"*.log\n");
+    h.ctx.load_known_ignore_files();
+    assert!(
+        !h.ctx.is_ignored(&rp("Launcher/a.log"), false),
+        "not known yet"
+    );
+    let mut f = file("I", "L", ".holoignore", b"*.log\n", "e1");
+    f.size = 6;
+    // A remote change touching the file reloads it.
+    remote::apply(&h.ctx, &[f], false).unwrap();
+    assert!(h.ctx.is_ignored(&rp("Launcher/a.log"), false));
 }

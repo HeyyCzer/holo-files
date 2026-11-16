@@ -8,12 +8,12 @@ use std::{
 
 use anyhow::Context as _;
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
 use holo_cfapi::PlaceholderSpec;
 use holo_core::{
     ChangeCursor, CloudProvider, ProviderError, RelPath, RemoteItem, RemoteItemId, naming,
 };
 use holo_state::ItemRecord;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     context::RootContext,
@@ -164,9 +164,8 @@ pub enum PullPhase {
 impl PullProgress {
     /// Estimated listing progress, capped at 99 until the listing ends.
     pub fn percent(&self) -> Option<u8> {
-        (self.full && self.total_bytes > 0).then(|| {
-            ((self.bytes as f64 / self.total_bytes as f64) * 100.0).min(99.0) as u8
-        })
+        (self.full && self.total_bytes > 0)
+            .then(|| ((self.bytes as f64 / self.total_bytes as f64) * 100.0).min(99.0) as u8)
     }
 
     /// Remaining time from the byte rate so far, once there is enough signal.
@@ -214,7 +213,9 @@ async fn pull_inner(ctx: &Arc<RootContext>, progress: &mut PullProgress) -> anyh
     if full_listing {
         match ctx.provider.item(ctx.remote_root()).await {
             Ok(item) => progress.total_bytes = item.size,
-            Err(e) => tracing::debug!(root = ctx.id(), error = %e, "remote folder size unavailable"),
+            Err(e) => {
+                tracing::debug!(root = ctx.id(), error = %e, "remote folder size unavailable")
+            }
         }
     }
     let Fetched {
@@ -250,7 +251,13 @@ async fn pull_inner(ctx: &Arc<RootContext>, progress: &mut PullProgress) -> anyh
         progress.phase = PullPhase::Applying;
         progress.full = full;
         publish_pull(ctx, progress);
-        tracing::info!(root = ctx.id(), changes = n, full, pages = progress.pages, "applying remote changes");
+        tracing::info!(
+            root = ctx.id(),
+            changes = n,
+            full,
+            pages = progress.pages,
+            "applying remote changes"
+        );
         let c = ctx.clone();
         let result = tokio::task::spawn_blocking(move || apply(&c, &changes, full)).await?;
         if let Err(e) = result {
@@ -275,7 +282,13 @@ pub fn apply(ctx: &RootContext, changes: &[RemoteItem], full: bool) -> anyhow::R
         .into_iter()
         .map(|r| (r.remote_id.clone(), r))
         .collect();
-    let actions = plan::plan(ctx.remote_root(), &known, changes, full, &ctx.ignore);
+    let actions = plan::plan(
+        ctx.remote_root(),
+        &known,
+        changes,
+        full,
+        &ctx.ignore_rules(),
+    );
     let deleting: HashSet<RemoteItemId> = actions
         .iter()
         .filter_map(|a| match a {
@@ -298,6 +311,22 @@ pub fn apply(ctx: &RootContext, changes: &[RemoteItem], full: bool) -> anyhow::R
             failed,
             "remote changes applied"
         );
+    }
+    // A `.holoignore` came from the cloud: its rules apply to the next batches.
+    let mut dirs: Vec<RelPath> = actions
+        .iter()
+        .flat_map(|a| match a {
+            RemoteAction::Create { path, .. } | RemoteAction::Delete { path, .. } => vec![path],
+            RemoteAction::Change { from, to, .. } => vec![from, to],
+            RemoteAction::Forget { .. } => vec![],
+        })
+        .filter(|p| crate::context::is_ignore_file(p))
+        .filter_map(|p| p.parent())
+        .collect();
+    dirs.sort_by_key(|d| d.key());
+    dirs.dedup_by_key(|d| d.key());
+    for d in dirs {
+        ctx.reload_ignore_file(&d);
     }
     anyhow::ensure!(failed == 0, "{failed} remote change(s) failed");
     Ok(())

@@ -46,6 +46,11 @@ pub trait LocalTree: Send + Sync + 'static {
     fn read_dir(&self, path: &Path) -> io::Result<Vec<String>>;
     /// Move content to the holo trash (outside the sync root) instead of deleting it.
     fn trash(&self, path: &Path, trash_dir: &Path) -> io::Result<()>;
+    /// Contents of a small text file (`None` if missing). May hydrate a placeholder.
+    fn read_text(&self, path: &Path) -> io::Result<Option<String>>;
+    /// Whether another process has the file open for writing (or exclusively), checked
+    /// locally so busy files (logs, databases) never reach the network.
+    fn in_use(&self, path: &Path) -> io::Result<bool>;
 }
 
 #[cfg(windows)]
@@ -138,5 +143,66 @@ mod cf {
             }
             Ok(())
         }
+        fn read_text(&self, path: &Path) -> io::Result<Option<String>> {
+            match std::fs::read(path) {
+                Ok(b) => Ok(Some(String::from_utf8_lossy(&b).into_owned())),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(e),
+            }
+        }
+        fn in_use(&self, path: &Path) -> io::Result<bool> {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_SHARE_READ: u32 = 1;
+            const FILE_SHARE_DELETE: u32 = 4;
+            const ERROR_SHARING_VIOLATION: i32 = 32;
+            const ERROR_LOCK_VIOLATION: i32 = 33;
+            // Opening for read while refusing to share write access fails if anyone
+            // else has it open for writing (or opened it without sharing reads).
+            // The handle is closed right away.
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+                .open(path)
+            {
+                Ok(_) => Ok(false),
+                Err(e)
+                    if matches!(
+                        e.raw_os_error(),
+                        Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
+                    ) =>
+                {
+                    Ok(true)
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn in_use_sees_writers_but_not_readers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.log");
+        std::fs::write(&path, b"x").unwrap();
+        let t = CfLocalTree;
+        assert!(!t.in_use(&path).unwrap());
+
+        let reader = std::fs::File::open(&path).unwrap();
+        assert!(!t.in_use(&path).unwrap(), "a reader doesn't block uploads");
+        drop(reader);
+
+        let writer = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        assert!(t.in_use(&path).unwrap(), "an open writer does");
+        drop(writer);
+        assert!(!t.in_use(&path).unwrap());
+        assert!(!t.in_use(&dir.path().join("missing")).unwrap());
     }
 }

@@ -9,6 +9,7 @@ oficial sem travar o Explorer ao criar, renomear ou apagar arquivos.
   A listagem de pastas também não depende da rede (os placeholders são criados antes, a partir do delta).
 - Hidratação parcial por *byte range*, com read-ahead configurável.
 - Ignora lixo de desenvolvimento por padrão (`node_modules/`, `.git/`, `target/`, `dist/`...), nos dois sentidos.
+- Arquivos abertos para escrita por outro programa (logs, bancos) esperam localmente, sem tocar a rede.
 - Nunca sobrescreve em silêncio: conflitos viram `nome (conflict PC AAAA-MM-DD HHMMSS).ext`.
 - Provedores atrás de um trait: OneDrive implementado; Google Drive com scaffold pronto.
 
@@ -85,6 +86,19 @@ Legenda: `↓` nuvem→PC, `↑` PC→nuvem, `⇄` conflito (os dois lados), `·
 (placeholder, link, mover). O resumo mostra quanto trafega já e quanto fica disponível sob demanda.
 
 > No Git Bash, use `MSYS_NO_PATHCONV=1` ou o PowerShell: o Bash converte `--remote /` em `C:/Program Files/Git/`.
+
+### Ignorar arquivos (`.holoignore`)
+
+Sintaxe do `.gitignore`. Vale em qualquer pasta do root: os padrões são relativos à pasta do
+arquivo e o `.holoignore` mais fundo tem prioridade. `./x` é aceito como `/x` (só nesta pasta).
+
+```gitignore
+# Documents\Rockstar Games\Launcher\.holoignore
+*.log
+```
+
+Criar, editar ou apagar um `.holoignore` vale na hora (o daemon recarrega) e tira da fila os
+uploads pendentes que passaram a ser ignorados. Itens já enviados continuam na nuvem.
 
 ### Uploads em paralelo (`[sync].concurrency`)
 

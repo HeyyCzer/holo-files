@@ -15,7 +15,7 @@ use holo_core::RelPath;
 use tokio::sync::{mpsc, watch};
 
 use crate::{
-    context::RootContext,
+    context::{RootContext, is_ignore_file},
     ops::{self, LocalOp},
 };
 
@@ -38,7 +38,13 @@ pub fn classify(ctx: &RootContext, path: &Path) -> std::io::Result<Vec<Classifie
     let Some(rel) = ctx.rel(path) else {
         return Ok(vec![]);
     };
-    if rel.is_root() || ctx.suppress.is_suppressed(&rel) {
+    if rel.is_root() {
+        return Ok(vec![]);
+    }
+    if is_ignore_file(&rel) {
+        ctx.reload_ignore_file(&rel.parent().unwrap_or_default());
+    }
+    if ctx.suppress.is_suppressed(&rel) {
         return Ok(vec![]);
     }
     let Some(st) = ctx.tree.state(path)? else {
@@ -94,7 +100,19 @@ impl LocalTask {
         self.dirty.insert(p, Instant::now());
     }
 
+    /// A `.holoignore` was removed or renamed away: reload its folder's rules.
+    fn ignore_file_gone(&self, path: &Path) {
+        if let Some(rel) = self.ctx.rel(path)
+            && is_ignore_file(&rel)
+        {
+            let ctx = self.ctx.clone();
+            let dir = rel.parent().unwrap_or_default();
+            tokio::task::spawn_blocking(move || ctx.reload_ignore_file(&dir));
+        }
+    }
+
     fn on_rename(&mut self, from: &Path, to: &Path) -> anyhow::Result<()> {
+        self.ignore_file_gone(from);
         let (Some(from_rel), to_rel) = (self.ctx.rel(from), self.ctx.rel(to)) else {
             self.mark(to.to_path_buf());
             return Ok(());
@@ -122,6 +140,7 @@ impl LocalTask {
     }
 
     fn on_delete(&mut self, path: &Path) -> anyhow::Result<()> {
+        self.ignore_file_gone(path);
         let Some(rel) = self.ctx.rel(path) else {
             return Ok(());
         };
@@ -253,6 +272,14 @@ impl LocalTask {
                 let Ok(names) = ctx.tree.read_dir(&dir) else {
                     continue;
                 };
+                // Rules first, so they apply to this folder's own entries.
+                if names
+                    .iter()
+                    .any(|n| n.eq_ignore_ascii_case(holo_core::ignore_rules::IGNORE_FILE))
+                    && let Some(d) = ctx.rel(&dir)
+                {
+                    ctx.reload_ignore_file(&d);
+                }
                 for n in names {
                     let p = dir.join(&n);
                     let Some(rel) = ctx.rel(&p) else { continue };

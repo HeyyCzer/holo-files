@@ -106,21 +106,15 @@ pub async fn plan(ctx: &Ctx, a: PlanArgs<'_>) -> anyhow::Result<()> {
     };
 
     let started = std::time::Instant::now();
-    let fetched = fetch_changes_with(
-        provider.as_ref(),
-        &remote_root,
-        cursor,
-        a.sample,
-        |l| {
-            let secs = started.elapsed().as_secs_f64().max(0.1);
-            eprint!(
-                "\rListing cloud… {} items, {} pages, {:.0} items/s   ",
-                l.items,
-                l.pages,
-                l.items as f64 / secs
-            );
-        },
-    )
+    let fetched = fetch_changes_with(provider.as_ref(), &remote_root, cursor, a.sample, |l| {
+        let secs = started.elapsed().as_secs_f64().max(0.1);
+        eprint!(
+            "\rListing cloud… {} items, {} pages, {:.0} items/s   ",
+            l.items,
+            l.pages,
+            l.items as f64 / secs
+        );
+    })
     .await?;
     eprintln!();
     if fetched.truncated {
@@ -129,7 +123,7 @@ pub async fn plan(ctx: &Ctx, a: PlanArgs<'_>) -> anyhow::Result<()> {
             fetched.changes.len()
         );
     }
-    let ignore = IgnoreRules::load(&local, engine_cfg.use_default_ignores, &engine_cfg.ignore)
+    let ignore = IgnoreRules::load_tree(&local, engine_cfg.use_default_ignores, &engine_cfg.ignore)
         .map_err(|e| anyhow::anyhow!("invalid ignore rules: {e}"))?;
     if !a.no_hash {
         eprintln!("Comparing local files (same-name files are hashed; nothing is downloaded)…");

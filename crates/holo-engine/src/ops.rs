@@ -65,6 +65,9 @@ pub fn enqueue_held(ctx: &RootContext, op: &LocalOp, reason: &str) -> anyhow::Re
     Ok(id)
 }
 
+/// How long to wait before looking again at a file another process is writing.
+const IN_USE_RETRY: Duration = Duration::from_secs(60);
+
 fn backoff(attempts: u32) -> Duration {
     Duration::from_secs((5u64 << attempts.min(7)).min(600))
 }
@@ -423,6 +426,12 @@ async fn upload(ctx: &Arc<RootContext>, path: &RelPath) -> anyhow::Result<()> {
     if age.to_std().unwrap_or_default() < ctx.cfg.settle_time {
         return Err(defer("file still being written", ctx.cfg.settle_time));
     }
+    // Checked locally before any hashing or network: logs and databases held open
+    // for writing would otherwise be uploaded, change mid-upload, and loop forever.
+    let l = local.clone();
+    if blocking(ctx, move |c| c.tree.in_use(&l)).await? {
+        return Err(defer("file open by another process", IN_USE_RETRY));
+    }
 
     let parent_id = ensure_remote_dir(ctx, &path.parent().unwrap_or_default()).await?;
     let by_identity = match st.identity().and_then(|b| std::str::from_utf8(b).ok()) {
@@ -518,10 +527,7 @@ async fn upload(ctx: &Arc<RootContext>, path: &RelPath) -> anyhow::Result<()> {
             Err(ProviderError::Io(e))
                 if e.raw_os_error() == Some(32) || e.raw_os_error() == Some(33) =>
             {
-                return Err(defer(
-                    "file locked by another process",
-                    Duration::from_secs(10),
-                ));
+                return Err(defer("file open by another process", IN_USE_RETRY));
             }
             Err(e) => return Err(e).context("upload"),
         }

@@ -1,6 +1,9 @@
 //! Wiring: build a root's context, connect Cloud Filter callbacks, spawn its tasks.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, RwLock},
+};
 
 use anyhow::Context as _;
 use holo_core::{CloudProvider, ignore_rules::IgnoreRules};
@@ -49,7 +52,7 @@ pub async fn start_root(
         provider,
         state,
         tree,
-        ignore,
+        ignore: RwLock::new(Arc::new(ignore)),
         cfg,
         suppress: Suppressor::default(),
         wake_remote: Notify::new(),
@@ -75,6 +78,12 @@ pub async fn start_root(
     };
     #[cfg(not(windows))]
     let _ = opts;
+
+    // Nested `.holoignore` files (after connecting: reading one may hydrate it).
+    {
+        let ctx = ctx.clone();
+        let _ = tokio::task::spawn_blocking(move || ctx.load_known_ignore_files()).await;
+    }
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (ready_tx, ready_rx) = watch::channel(false);
