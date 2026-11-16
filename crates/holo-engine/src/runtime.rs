@@ -27,6 +27,8 @@ pub struct RootHandle {
 pub struct StartOptions {
     /// Connect Cloud Filter callbacks (false in tests).
     pub connect_cloud_filter: bool,
+    /// Machine load source for adaptive concurrency.
+    pub load: Option<Arc<dyn crate::adaptive::LoadProbe>>,
 }
 
 pub async fn start_root(
@@ -55,6 +57,7 @@ pub async fn start_root(
         events: events_tx,
         pull_failures: Default::default(),
         dir_lock: Default::default(),
+        load: opts.load.clone(),
     });
 
     #[cfg(windows)]

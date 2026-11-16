@@ -10,7 +10,7 @@ use holo_state::{ItemRecord, OpRecord, OpState};
 use serde::{Deserialize, Serialize};
 use tokio::{sync::watch, task::JoinSet};
 
-use crate::context::RootContext;
+use crate::{adaptive::Controller, context::RootContext};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -77,6 +77,15 @@ pub struct ExecProgress {
     pub done: u64,
     pub failed: u64,
     pub running: Vec<RunningOp>,
+    /// Ops allowed to run at once right now, its upper bound, and why.
+    #[serde(default)]
+    pub workers: usize,
+    #[serde(default)]
+    pub max_workers: usize,
+    #[serde(default)]
+    pub auto: bool,
+    #[serde(default)]
+    pub workers_reason: String,
     /// Unix ms of the last update.
     pub updated_ms: i64,
 }
@@ -109,13 +118,22 @@ fn op_path(op: &LocalOp) -> &RelPath {
 
 type Finished = (OpRecord, LocalOp, anyhow::Result<()>);
 
-/// Executor loop for one root: up to `cfg.op_workers` ops at a time.
+/// How often adaptive concurrency is re-evaluated.
+const ADAPT_EVERY: Duration = Duration::from_secs(2);
+
+/// Executor loop for one root; how many ops run at once comes from `cfg.concurrency`.
 pub async fn run(ctx: Arc<RootContext>, mut shutdown: watch::Receiver<bool>) {
-    let workers = ctx.cfg.op_workers.max(1);
+    let mut control = Controller::new(ctx.cfg.concurrency);
+    let mut adapt = tokio::time::interval(ADAPT_EVERY);
+    adapt.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut tasks: JoinSet<Finished> = JoinSet::new();
     let mut running: HashMap<i64, (RelPath, RunningOp)> = HashMap::new();
     let mut barrier = false;
-    let mut progress = ExecProgress::default();
+    let mut progress = ExecProgress {
+        max_workers: ctx.cfg.concurrency.max(),
+        auto: control.is_auto(),
+        ..Default::default()
+    };
     let publish = |p: &mut ExecProgress, running: &HashMap<i64, (RelPath, RunningOp)>| {
         p.running = running.values().map(|(_, r)| r.clone()).collect();
         p.running.sort_by_key(|r| r.id);
@@ -124,12 +142,36 @@ pub async fn run(ctx: Arc<RootContext>, mut shutdown: watch::Receiver<bool>) {
             let _ = ctx.state.kv_set(&progress_key(ctx.id()), &json);
         }
     };
+    let adjust = |control: &mut Controller, progress: &mut ExecProgress| {
+        if control.is_auto() {
+            let backlog = ctx
+                .state
+                .op_counts(ctx.id())
+                .map(|c| c.pending)
+                .unwrap_or(0);
+            let load = ctx.load.as_ref().and_then(|p| p.sample());
+            let before = control.workers();
+            let now = control.update(
+                std::time::Instant::now(),
+                backlog,
+                ctx.provider.throttle_count(),
+                load,
+            );
+            if now != before {
+                tracing::debug!(workers = now, reason = control.reason(), "concurrency");
+            }
+        }
+        progress.workers = control.workers();
+        progress.workers_reason = control.reason().to_string();
+    };
+    adjust(&mut control, &mut progress);
     publish(&mut progress, &running);
 
     loop {
         if *shutdown.borrow() {
             break;
         }
+        let workers = control.workers();
         // Fill free slots, oldest ops first.
         if !barrier && tasks.len() < workers {
             let started = tasks.len();
@@ -203,6 +245,10 @@ pub async fn run(ctx: Arc<RootContext>, mut shutdown: watch::Receiver<bool>) {
             tokio::select! {
                 _ = ctx.wake_ops.notified() => {}
                 _ = tokio::time::sleep(wait) => {}
+                _ = adapt.tick() => {
+                    adjust(&mut control, &mut progress);
+                    publish(&mut progress, &running);
+                }
                 _ = shutdown.changed() => break,
             }
             continue;
@@ -234,6 +280,10 @@ pub async fn run(ctx: Arc<RootContext>, mut shutdown: watch::Receiver<bool>) {
                 publish(&mut progress, &running);
             }
             _ = ctx.wake_ops.notified() => {}
+            _ = adapt.tick() => {
+                adjust(&mut control, &mut progress);
+                publish(&mut progress, &running);
+            }
             _ = shutdown.changed() => break,
         }
     }

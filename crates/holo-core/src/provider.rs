@@ -48,6 +48,12 @@ pub struct UploadRequest<'a> {
 pub trait CloudProvider: Send + Sync {
     fn kind(&self) -> ProviderKind;
 
+    /// Times the service has asked us to slow down (HTTP 429/503) since start.
+    /// Lets the engine shrink its parallelism; 0 if the provider can't tell.
+    fn throttle_count(&self) -> u64 {
+        0
+    }
+
     fn capabilities(&self) -> Capabilities;
 
     async fn account(&self) -> ProviderResult<AccountInfo>;

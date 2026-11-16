@@ -35,6 +35,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<()> {
     let engine_cfg = ctx.cfg.engine(&ctx.paths);
     let mut providers: HashMap<String, Arc<dyn CloudProvider>> = HashMap::new();
     let mut handles = Vec::new();
+    let load = crate::load::probe();
 
     for root in roots {
         let provider = match providers.get(&root.account_id) {
@@ -56,6 +57,7 @@ pub async fn run(ctx: &Ctx) -> anyhow::Result<()> {
             engine_cfg.clone(),
             holo_engine::runtime::StartOptions {
                 connect_cloud_filter: cfg!(windows),
+                load: load.clone(),
             },
         )
         .await

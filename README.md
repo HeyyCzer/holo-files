@@ -86,6 +86,23 @@ Legenda: `↓` nuvem→PC, `↑` PC→nuvem, `⇄` conflito (os dois lados), `·
 
 > No Git Bash, use `MSYS_NO_PATHCONV=1` ou o PowerShell: o Bash converte `--remote /` em `C:/Program Files/Git/`.
 
+### Uploads em paralelo (`[sync].concurrency`)
+
+```toml
+[sync]
+concurrency = "auto"   # ou um número fixo
+concurrency_min = 1
+concurrency_max = 16
+```
+
+No modo `auto` o número de uploads simultâneos é reavaliado a cada 2 s:
+
+- **fila**: nunca mais workers que ops pendentes;
+- **uso do PC**: sem teclado/mouse há 5 min → máximo; usando → metade; usando com CPU ≥ 75% → mínimo; na bateria → metade;
+- **servidor**: HTTP 429/503 → corta pela metade e segura 30 s.
+
+Sobe dobrando até o primeiro throttle e depois +1 por ciclo. `holo status --stream` mostra o valor atual e o motivo.
+
 ## Segurança dos dados
 
 - Exclusões remotas vão para a lixeira do OneDrive; o conteúdo local hidratado de itens apagados

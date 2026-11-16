@@ -1,5 +1,7 @@
 use std::{path::PathBuf, time::Duration};
 
+use crate::adaptive::Concurrency;
+
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// How often to poll the remote change feed.
@@ -26,7 +28,7 @@ pub struct EngineConfig {
     /// Attempts before an op is marked failed.
     pub max_op_attempts: u32,
     /// Journal ops executed at the same time (uploads, folder creation).
-    pub op_workers: usize,
+    pub concurrency: Concurrency,
 }
 
 impl Default for EngineConfig {
@@ -48,7 +50,7 @@ impl Default for EngineConfig {
             ],
             trash_dir: std::env::temp_dir().join("holo-trash"),
             max_op_attempts: 8,
-            op_workers: 4,
+            concurrency: Concurrency::default(),
         }
     }
 }

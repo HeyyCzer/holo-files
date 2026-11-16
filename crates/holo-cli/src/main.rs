@@ -1,5 +1,6 @@
 mod cmd;
 mod config;
+mod load;
 mod providers;
 
 use std::path::PathBuf;

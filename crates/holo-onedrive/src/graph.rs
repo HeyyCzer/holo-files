@@ -1,7 +1,13 @@
 //! Thin Graph HTTP client: auth header, global concurrency limit, retry with
 //! `Retry-After` and exponential backoff + jitter, error mapping.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use holo_auth::TokenManager;
 use holo_core::{ProviderError, ProviderResult};
@@ -42,6 +48,7 @@ pub struct GraphClient {
     no_redirect: reqwest::Client,
     tokens: Arc<TokenManager>,
     limiter: Semaphore,
+    throttled: AtomicU64,
     pub opts: GraphOptions,
 }
 
@@ -104,8 +111,14 @@ impl GraphClient {
             no_redirect: build(redirect::Policy::none())?,
             tokens,
             limiter: Semaphore::new(opts.concurrency.max(1)),
+            throttled: AtomicU64::new(0),
             opts,
         })
+    }
+
+    /// 429/503 responses seen so far.
+    pub fn throttle_count(&self) -> u64 {
+        self.throttled.load(Ordering::Relaxed)
     }
 
     async fn token(&self) -> ProviderResult<String> {
@@ -151,6 +164,9 @@ impl GraphClient {
                 }
                 Err(e) => net(e),
             };
+            if matches!(err, ProviderError::Throttled { .. }) {
+                self.throttled.fetch_add(1, Ordering::Relaxed);
+            }
             match &err {
                 ProviderError::Unauthorized(_) if authenticated && !refreshed => {
                     refreshed = true;

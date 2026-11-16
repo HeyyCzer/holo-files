@@ -181,8 +181,18 @@ fn root_panel(
             String::new()
         }
     ));
-    let workers = ctx.cfg.sync.concurrency.max(1);
-    out.push(format!("  running {}/{workers}:", progress.running.len()));
+    let workers = if progress.auto {
+        format!(
+            "{} of max {} (auto: {})",
+            progress.workers, progress.max_workers, progress.workers_reason
+        )
+    } else {
+        progress.workers.to_string()
+    };
+    out.push(format!(
+        "  running {} · workers {workers}:",
+        progress.running.len()
+    ));
     let now = chrono::Utc::now().timestamp_millis();
     for op in &progress.running {
         let age = Duration::from_millis((now - op.started_ms).max(0) as u64);

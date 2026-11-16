@@ -32,6 +32,8 @@ pub struct RootContext {
     /// Serializes remote folder creation so parallel ops don't race to create
     /// the same parent.
     pub dir_lock: tokio::sync::Mutex<()>,
+    /// How busy the PC is, for adaptive concurrency (`None`: unknown).
+    pub load: Option<Arc<dyn crate::adaptive::LoadProbe>>,
 }
 
 impl RootContext {

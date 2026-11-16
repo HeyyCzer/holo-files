@@ -509,6 +509,7 @@ fn harness() -> Harness {
     let cfg = EngineConfig {
         settle_time: std::time::Duration::ZERO,
         machine_name: "PC".into(),
+        concurrency: crate::adaptive::Concurrency::Fixed(4),
         ..Default::default()
     };
     let ctx = Arc::new(RootContext {
@@ -525,6 +526,7 @@ fn harness() -> Harness {
         events: tx,
         pull_failures: Default::default(),
         dir_lock: Default::default(),
+        load: None,
     });
     Harness {
         ctx,

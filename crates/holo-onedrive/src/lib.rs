@@ -85,6 +85,10 @@ impl CloudProvider for OneDriveProvider {
         ProviderKind::OneDrive
     }
 
+    fn throttle_count(&self) -> u64 {
+        self.graph.throttle_count()
+    }
+
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             ranged_download: true,

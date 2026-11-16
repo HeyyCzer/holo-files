@@ -3,7 +3,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use anyhow::Context as _;
-use holo_engine::EngineConfig;
+use holo_engine::{EngineConfig, adaptive::Concurrency};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -34,9 +34,13 @@ pub struct GoogleDriveConfig {
 #[serde(default)]
 pub struct SyncConfig {
     pub poll_interval_secs: u64,
-    /// Uploads/journal ops in parallel. The HTTP limit is this + 4, so opening
-    /// files (hydration) never waits behind a full upload queue.
-    pub concurrency: usize,
+    /// Uploads/journal ops in parallel: `"auto"` (adapts to queue size, PC use and
+    /// server throttling, between `concurrency_min` and `concurrency_max`) or a
+    /// fixed number. The HTTP limit is the maximum + 4, so opening files
+    /// (hydration) never waits behind a full upload queue.
+    pub concurrency: ConcurrencySetting,
+    pub concurrency_min: usize,
+    pub concurrency_max: usize,
     pub mass_delete_threshold: usize,
     /// Minimum MiB fetched per hydration request.
     pub read_ahead_mib: u64,
@@ -47,11 +51,33 @@ pub struct SyncConfig {
     pub blocked_hydration_processes: Option<Vec<String>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ConcurrencySetting {
+    Fixed(usize),
+    /// Only `"auto"` is valid (checked on load).
+    Mode(String),
+}
+
+impl SyncConfig {
+    pub fn concurrency(&self) -> Concurrency {
+        match &self.concurrency {
+            ConcurrencySetting::Fixed(n) => Concurrency::Fixed((*n).max(1)),
+            ConcurrencySetting::Mode(_) => Concurrency::Auto {
+                min: self.concurrency_min.max(1),
+                max: self.concurrency_max.max(self.concurrency_min).max(1),
+            },
+        }
+    }
+}
+
 impl Default for SyncConfig {
     fn default() -> Self {
         Self {
             poll_interval_secs: 30,
-            concurrency: 8,
+            concurrency: ConcurrencySetting::Mode("auto".into()),
+            concurrency_min: 1,
+            concurrency_max: 16,
             mass_delete_threshold: 200,
             read_ahead_mib: 4,
             full_scan_interval_mins: 60,
@@ -106,7 +132,9 @@ client_id = ""
 
 [sync]
 poll_interval_secs = 30
-concurrency = 8   # uploads in parallel
+concurrency = "auto"   # or a fixed number of parallel uploads
+concurrency_min = 1
+concurrency_max = 16
 mass_delete_threshold = 200
 read_ahead_mib = 4
 full_scan_interval_mins = 60
@@ -124,8 +152,17 @@ impl Config {
             std::fs::write(&paths.config_file, TEMPLATE)?;
         }
         let text = std::fs::read_to_string(&paths.config_file)?;
-        toml::from_str(&text)
-            .with_context(|| format!("invalid config {}", paths.config_file.display()))
+        let cfg: Self = toml::from_str(&text)
+            .with_context(|| format!("invalid config {}", paths.config_file.display()))?;
+        if let ConcurrencySetting::Mode(m) = &cfg.sync.concurrency
+            && !m.eq_ignore_ascii_case("auto")
+        {
+            anyhow::bail!(
+                "invalid config {}: sync.concurrency must be \"auto\" or a number, got {m:?}",
+                paths.config_file.display()
+            );
+        }
+        Ok(cfg)
     }
 
     pub fn engine(&self, paths: &Paths) -> EngineConfig {
@@ -138,12 +175,43 @@ impl Config {
             use_default_ignores: s.use_default_ignores,
             ignore: s.ignore.clone(),
             trash_dir: paths.trash(),
-            op_workers: s.concurrency.max(1),
+            concurrency: s.concurrency(),
             ..EngineConfig::default()
         };
         if let Some(b) = &s.blocked_hydration_processes {
             e.blocked_hydration_processes = b.clone();
         }
         e
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sync(toml_text: &str) -> SyncConfig {
+        toml::from_str::<Config>(toml_text).unwrap().sync
+    }
+
+    #[test]
+    fn concurrency_number_is_fixed_and_auto_uses_bounds() {
+        assert_eq!(
+            sync("[sync]\nconcurrency = 4").concurrency(),
+            Concurrency::Fixed(4)
+        );
+        assert_eq!(
+            sync("[sync]\nconcurrency = \"auto\"\nconcurrency_max = 12").concurrency(),
+            Concurrency::Auto { min: 1, max: 12 }
+        );
+        assert_eq!(
+            SyncConfig::default().concurrency(),
+            Concurrency::Auto { min: 1, max: 16 }
+        );
+    }
+
+    #[test]
+    fn template_parses() {
+        let cfg: Config = toml::from_str(TEMPLATE).unwrap();
+        assert!(matches!(cfg.sync.concurrency(), Concurrency::Auto { .. }));
     }
 }

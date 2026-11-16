@@ -11,6 +11,7 @@
 //! The engine only talks to the filesystem through [`LocalTree`], so all logic can be
 //! tested with an in-memory tree and a fake provider.
 
+pub mod adaptive;
 pub mod config;
 pub mod context;
 pub mod decide;
