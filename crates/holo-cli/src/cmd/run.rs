@@ -71,7 +71,11 @@ impl Daemon<'_> {
             if self.running.contains_key(&id) {
                 continue;
             }
-            if self.failed.get(&id).is_some_and(|t| t.elapsed() < RETRY_FAILED) {
+            if self
+                .failed
+                .get(&id)
+                .is_some_and(|t| t.elapsed() < RETRY_FAILED)
+            {
                 continue;
             }
             let path = root.local_path.clone();

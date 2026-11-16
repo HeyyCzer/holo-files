@@ -4,6 +4,7 @@
 use holo_cli::cmd::{Ctx, daemon_running, pull_line};
 use holo_engine::{
     context::is_paused,
+    hydrate::{HydrateProgress, hydrate_key},
     ops::{ExecProgress, LocalOp, progress_key},
     remote::{PullPhase, PullProgress, pull_key},
 };
@@ -39,6 +40,8 @@ pub struct RootView {
     pub items: u64,
     pub counts: OpCounts,
     pub progress: ExecProgress,
+    /// Downloads of cloud-only files opened by apps (empty when the daemon is stopped).
+    pub hydrate: HydrateProgress,
     /// Current cloud pull, if one is running (`None` when idle).
     pub pull: Option<String>,
     pub pulling: bool,
@@ -65,7 +68,16 @@ impl Snapshot {
                 .kv_get(&pull_key(&root.id))?
                 .and_then(|j| serde_json::from_str::<PullProgress>(&j).ok())
                 .is_some_and(|p| p.phase != PullPhase::Idle);
+            let hydrate = if daemon {
+                ctx.state
+                    .kv_get(&hydrate_key(&root.id))?
+                    .and_then(|j| serde_json::from_str(&j).ok())
+                    .unwrap_or_default()
+            } else {
+                HydrateProgress::default()
+            };
             roots.push(RootView {
+                hydrate,
                 items: ctx.state.item_count(&root.id)?,
                 counts: ctx.state.op_counts(&root.id)?,
                 pull: if daemon {
@@ -96,7 +108,10 @@ impl Snapshot {
     }
 
     pub fn running(&self) -> usize {
-        self.roots.iter().map(|r| r.progress.running.len()).sum()
+        self.roots
+            .iter()
+            .map(|r| r.progress.running.len() + r.hydrate.active.len())
+            .sum()
     }
 
     pub fn status(&self) -> Status {
@@ -176,6 +191,7 @@ mod tests {
                 items: 0,
                 counts,
                 progress,
+                hydrate: Default::default(),
                 pull: None,
                 pulling: false,
             }],

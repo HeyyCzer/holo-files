@@ -45,9 +45,7 @@ fn print_status(ctx: &Ctx) -> anyhow::Result<()> {
             "   ops: {} pending, {} held, {} failed",
             c.pending, c.held, c.failed
         );
-        if daemon
-            && let Some(line) = super::pull_line(ctx, &r.id)?
-        {
+        if daemon && let Some(line) = super::pull_line(ctx, &r.id)? {
             println!("   {line}");
         }
         if c.held > 0 {

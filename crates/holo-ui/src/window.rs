@@ -212,6 +212,7 @@ impl App {
                         }
                     });
             }
+            hydrations(ui, r);
         });
     }
 
@@ -387,6 +388,79 @@ fn stat(ui: &mut egui::Ui, name: &str, n: u64, color: Option<Color32>) {
     ui.label(t);
     ui.label(RichText::new(name).weak());
     ui.add_space(8.0);
+}
+
+/// Cloud-only files being downloaded because an app opened them, plus the last few
+/// finished (failures show why the app got nothing).
+fn hydrations(ui: &mut egui::Ui, r: &RootView) {
+    let h = &r.hydrate;
+    if h.active.is_empty() && h.recent.is_empty() {
+        return;
+    }
+    ui.add_space(4.0);
+    ui.label(RichText::new("Downloads sob demanda (arquivos abertos só na nuvem)").strong());
+    let now = chrono::Utc::now().timestamp_millis();
+    egui::Grid::new(("hydrate", &r.root.id))
+        .striped(true)
+        .show(ui, |ui| {
+            for a in &h.active {
+                let frac = if a.bytes > 0 {
+                    a.done as f32 / a.bytes as f32
+                } else {
+                    0.0
+                };
+                ui.add(
+                    egui::ProgressBar::new(frac)
+                        .desired_width(120.0)
+                        .text(format!("{} / {}", fmt_size(a.done), fmt_size(a.bytes))),
+                );
+                ui.label(fmt_age(Duration::from_millis(
+                    (now - a.started_ms).max(0) as u64
+                )));
+                ui.label(a.process.as_deref().unwrap_or("?"));
+                ui.label(&a.path);
+                ui.end_row();
+            }
+            for f in &h.recent {
+                match &f.error {
+                    None => ui.label(
+                        RichText::new(format!("ok · {}", fmt_size(f.bytes)))
+                            .color(Color32::from_rgb(0x4a, 0xa8, 0x5a)),
+                    ),
+                    Some(_) => {
+                        ui.label(RichText::new("falhou").color(Color32::from_rgb(0xd9, 0x4a, 0x2b)))
+                    }
+                };
+                ui.label(
+                    RichText::new(format!(
+                        "há {}",
+                        fmt_age(Duration::from_millis((now - f.finished_ms).max(0) as u64))
+                    ))
+                    .weak(),
+                );
+                ui.label(f.process.as_deref().unwrap_or("?"));
+                let path = ui.label(&f.path);
+                if let Some(e) = &f.error {
+                    path.on_hover_text(e);
+                    ui.label(RichText::new(e).weak());
+                }
+                ui.end_row();
+            }
+        });
+}
+
+fn fmt_size(b: u64) -> String {
+    const K: f64 = 1024.0;
+    let b = b as f64;
+    if b < K {
+        format!("{b} B")
+    } else if b < K * K {
+        format!("{:.0} KiB", b / K)
+    } else if b < K * K * K {
+        format!("{:.1} MiB", b / K / K)
+    } else {
+        format!("{:.2} GiB", b / K / K / K)
+    }
 }
 
 fn fmt_age(d: Duration) -> String {
