@@ -964,6 +964,26 @@ async fn unchanged_content_is_not_reuploaded() {
 }
 
 #[tokio::test]
+async fn dehydrated_out_of_sync_placeholder_is_marked_synced_without_upload() {
+    let h = harness();
+    h.apply(&[file("F", "R", "a.txt", b"v1", "e1")]);
+    h.provider.add(file("F", "R", "a.txt", b"v1", "e1"));
+    h.tree
+        .with(&h.ctx.local(&rp("a.txt")), |n| {
+            let ph = n.ph.as_mut().unwrap();
+            ph.in_sync = false; // e.g. local rename/move of a cloud-only file
+            ph.partial = true;
+        })
+        .unwrap();
+    ops::execute(&h.ctx, &LocalOp::Upload { path: rp("a.txt") })
+        .await
+        .unwrap();
+    assert_eq!(h.provider.get("F").unwrap().etag.as_deref(), Some("e1"));
+    let ph = h.tree.get("a.txt").unwrap().ph.unwrap();
+    assert!(ph.in_sync && ph.partial);
+}
+
+#[tokio::test]
 async fn local_rename_and_delete_reach_remote() {
     let h = harness();
     h.apply(&[file("F", "R", "a.txt", b"1", "e")]);

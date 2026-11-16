@@ -428,6 +428,17 @@ async fn upload(ctx: &Arc<RootContext>, path: &RelPath) -> anyhow::Result<()> {
     if !st.needs_upload() {
         return Ok(());
     }
+    // Content not (fully) on disk can't have been edited locally (writes hydrate first):
+    // only metadata changed (e.g. a local rename clears in-sync). Reading it would fail
+    // anyway, since our connection blocks self-hydration (os error 395).
+    if let Some(ph) = &st.placeholder
+        && ph.partial
+        && !ph.identity.is_empty()
+    {
+        let (l, id) = (local.clone(), ph.identity.clone());
+        blocking(ctx, move |c| c.tree.mark_synced(&l, &id, None)).await?;
+        return Ok(());
+    }
     let age = Utc::now() - st.modified;
     if age.to_std().unwrap_or_default() < ctx.cfg.settle_time {
         return Err(defer("file still being written", ctx.cfg.settle_time));
