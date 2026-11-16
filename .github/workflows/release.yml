@@ -16,6 +16,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # full history + tags, for the changelog
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -61,18 +63,38 @@ jobs:
           name: holo-${{ steps.version.outputs.version }}-windows-x64
           path: dist/*
 
+      - name: Release notes
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          # Previous tag reachable from this one; none on the first release -> whole history.
+          $prev = git describe --tags --abbrev=0 "$env:GITHUB_REF_NAME^" 2>$null
+          $range = if ($LASTEXITCODE -eq 0 -and $prev) { "$prev..$env:GITHUB_REF_NAME" } else { $env:GITHUB_REF_NAME }
+          $commits = git log $range --no-merges --pretty=format:'- %s (%h)' |
+              Where-Object { $_ -notmatch '^- 🔖' }
+          if (-not $commits) { $commits = '- No changes.' }
+          $body = @"
+          ## Changes
+
+          $($commits -join "`n")
+
+          ## Downloads
+
+          | File | What it is |
+          |---|---|
+          | ``holo-setup-$v.exe`` | **Installer** (recommended). Per-user, no admin: adds ``holo`` to PATH, Start menu entry, optional tray at logon, clean upgrades. |
+          | ``holo-$v-windows-x64.zip`` | **Portable**: ``holo.exe`` + ``holo-ui.exe``. Unzip anywhere; keep both in the same folder. |
+          | ``holo.exe`` / ``holo-ui.exe`` | Bare executables (CLI / tray + window). ``holo-ui.exe`` needs ``holo.exe`` next to it. |
+          | ``SHA256SUMS.txt`` | Checksums. |
+          "@
+          $body | Set-Content -Encoding utf8 release-notes.md
+
       - name: Publish release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          body_path: release-notes.md
+          # Appends GitHub's merged-PR list, new contributors and the compare link.
           generate_release_notes: true
-          body: |
-            ## Downloads
-
-            | File | What it is |
-            |---|---|
-            | `holo-setup-${{ steps.version.outputs.version }}.exe` | **Installer** (recommended). Per-user, no admin: adds `holo` to PATH, Start menu entry, optional tray at logon, clean upgrades. |
-            | `holo-${{ steps.version.outputs.version }}-windows-x64.zip` | **Portable**: `holo.exe` + `holo-ui.exe`. Unzip anywhere; keep both in the same folder. |
-            | `holo.exe` / `holo-ui.exe` | Bare executables (CLI / tray + window). `holo-ui.exe` needs `holo.exe` next to it. |
-            | `SHA256SUMS.txt` | Checksums. |
