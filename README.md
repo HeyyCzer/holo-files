@@ -226,11 +226,17 @@ app icon and each `holo-<status>.svg` is a complete tray variant. `build.rs` ras
 
 [`release.yml`](.github/workflows/release.yml) builds the installer, the portable zip and the
 bare executables on every `v*` tag and attaches them to a GitHub release. The tag must match
-the workspace version in `Cargo.toml`:
+the workspace version in `Cargo.toml`. The `bump` task bumps that version, commits
+(`🔖 vX.Y.Z`) and creates the annotated tag; `--push` also pushes the branch and the tag,
+which triggers the release:
 
 ```powershell
-git tag v0.1.0; git push origin v0.1.0
+cargo run -q -p xtask -- bump patch            # 0.1.0 -> 0.1.1 (commit + tag, local)
+cargo run -q -p xtask -- bump minor --push     # 0.1.0 -> 0.2.0 and publish
+cargo run -q -p xtask -- bump major            # 0.1.0 -> 1.0.0
 ```
+
+It refuses to run with a dirty working tree or if the tag already exists.
 
 Running the workflow manually only builds the artifacts (downloadable from the run).
 
