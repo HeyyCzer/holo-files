@@ -107,6 +107,22 @@ O teste do driver real registra um sync root temporário em `target/`, cria plac
 hidrata a partir de outro processo (PowerShell), valida os bytes, libera espaço, faz pin,
 renomeia e apaga, e confere as notificações.
 
+### Coverage
+
+Mostra quais linhas os testes executam (verde) e quais nunca rodam (vermelho), por arquivo.
+Usa [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov):
+
+```powershell
+rustup component add llvm-tools-preview    # uma vez
+cargo install cargo-llvm-cov --locked      # uma vez
+
+cargo llvm-cov --workspace --html --open   # relatório HTML (target/llvm-cov/html) no navegador
+cargo llvm-cov --workspace --summary-only  # tabela no terminal
+cargo llvm-cov --workspace --lcov --output-path lcov.info   # para o VS Code (Coverage Gutters)
+```
+
+O teste do driver real (`--ignored`) fica fora; para incluí-lo, adicione `-- --include-ignored`.
+
 ## Limitações conhecidas
 
 - **Ainda não testado contra uma conta OneDrive real** (falta um Client ID): login, delta,
