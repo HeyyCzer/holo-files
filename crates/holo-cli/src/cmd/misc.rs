@@ -30,6 +30,7 @@ fn print_status(ctx: &Ctx) -> anyhow::Result<()> {
     if roots.is_empty() {
         println!("No sync roots.");
     }
+    let daemon = super::daemon_running(ctx);
     for r in roots {
         let c = ctx.state.op_counts(&r.id)?;
         let items = ctx.state.item_count(&r.id)?;
@@ -44,6 +45,11 @@ fn print_status(ctx: &Ctx) -> anyhow::Result<()> {
             "   ops: {} pending, {} held, {} failed",
             c.pending, c.held, c.failed
         );
+        if daemon
+            && let Some(line) = super::pull_line(ctx, &r.id)?
+        {
+            println!("   {line}");
+        }
         if c.held > 0 {
             println!(
                 "   ! held operations need confirmation: `holo ops` then `holo ops release` or `holo ops discard`"

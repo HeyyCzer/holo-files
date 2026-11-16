@@ -84,7 +84,13 @@ pub async fn start_root(
         let mut shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
             loop {
-                match remote::pull(&ctx).await {
+                // A full listing can take minutes; don't make shutdown wait for it
+                // (the cursor is only saved after a complete pull).
+                let pulled = tokio::select! {
+                    r = remote::pull(&ctx) => r,
+                    _ = shutdown.changed() => return,
+                };
+                match pulled {
                     Ok(0) => tracing::debug!(root = ctx.id(), "no remote changes"),
                     Ok(n) => tracing::info!(root = ctx.id(), changes = n, "remote changes"),
                     Err(e) => {

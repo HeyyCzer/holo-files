@@ -67,6 +67,31 @@ pub fn human_bytes(n: u64) -> String {
     }
 }
 
+/// One-line description of an in-flight remote pull, if the daemon is in one.
+pub fn pull_line(ctx: &Ctx, root_id: &str) -> anyhow::Result<Option<String>> {
+    use holo_engine::remote::{PullPhase, PullProgress, pull_key};
+    let Some(p) = ctx
+        .state
+        .kv_get(&pull_key(root_id))?
+        .and_then(|j| serde_json::from_str::<PullProgress>(&j).ok())
+    else {
+        return Ok(None);
+    };
+    let secs = (chrono::Utc::now().timestamp_millis() - p.started_ms).max(0) / 1000;
+    let what = if p.full { "full listing" } else { "changes" };
+    Ok(match p.phase {
+        PullPhase::Idle => None,
+        PullPhase::Listing => Some(format!(
+            "cloud: {what} · {} items in {} pages · {secs}s",
+            p.items, p.pages
+        )),
+        PullPhase::Applying => Some(format!(
+            "cloud: applying {} items locally · {secs}s",
+            p.items
+        )),
+    })
+}
+
 /// `holo run` holds the lock file exclusively while it runs.
 pub fn daemon_running(ctx: &Ctx) -> bool {
     let lock = ctx.paths.lock();

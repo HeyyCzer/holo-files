@@ -174,15 +174,30 @@ pub fn remove(ctx: &Ctx, key: &str, yes: bool) -> anyhow::Result<()> {
     {
         let account = ctx.account(Some(&root.account_id))?;
         let spec = sync_root_spec(&root, &account.display_name, account.provider);
-        // Keep the DB record on failure: deleting it would orphan the Windows
-        // registration (Explorer entry stays) with no way to retry from holo.
-        if holo_cfapi::root::is_registered(&spec).unwrap_or(true) {
-            holo_cfapi::root::unregister(&spec).with_context(|| {
-                format!(
-                    "unregistering {} from Windows failed; stop `holo run` / `holo service` and retry",
-                    root.local_path
-                )
-            })?;
+        // A running daemon holds the Cloud Filter connection, which blocks
+        // unregistering. Disabling the root makes it let go within a few seconds.
+        ctx.state.set_root_enabled(&root.id, false)?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            if !holo_cfapi::root::is_registered(&spec).unwrap_or(true) {
+                break;
+            }
+            match holo_cfapi::root::unregister(&spec) {
+                Ok(()) => break,
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                // Keep the DB record (disabled): deleting it would orphan the Windows
+                // registration (Explorer entry stays) with no way to retry from holo.
+                Err(e) => {
+                    return Err(e).with_context(|| {
+                        format!(
+                            "unregistering {} from Windows failed; the root is now disabled, retry `holo remove-root`",
+                            root.local_path
+                        )
+                    });
+                }
+            }
         }
     }
     ctx.state.delete_root(&root.id)?;

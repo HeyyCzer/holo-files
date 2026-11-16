@@ -150,6 +150,9 @@ fn root_panel(
     if !daemon {
         return Ok(());
     }
+    if let Some(line) = super::pull_line(ctx, &r.id)? {
+        out.push(format!("  {line}"));
+    }
     let progress: ExecProgress = ctx
         .state
         .kv_get(&progress_key(&r.id))?

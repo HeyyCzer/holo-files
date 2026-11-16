@@ -7,6 +7,8 @@ use std::{
 };
 
 use anyhow::Context as _;
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use holo_cfapi::PlaceholderSpec;
 use holo_core::{
     ChangeCursor, CloudProvider, ProviderError, RelPath, RemoteItem, RemoteItemId, naming,
@@ -109,23 +111,88 @@ pub async fn fetch_changes_with(
     }
 }
 
+/// What the remote pull is doing; published to the state store (kv
+/// `pull/<root id>`) so `holo status` can show the (possibly long) initial listing.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PullProgress {
+    pub phase: PullPhase,
+    /// Changes received so far in this pull, and how many pages that took.
+    pub items: usize,
+    pub pages: usize,
+    /// True when enumerating everything (initial sync or expired cursor).
+    pub full: bool,
+    pub started_ms: i64,
+    pub updated_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PullPhase {
+    #[default]
+    Idle,
+    Listing,
+    Applying,
+}
+
+pub fn pull_key(root_id: &str) -> String {
+    format!("pull/{root_id}")
+}
+
+fn publish_pull(ctx: &RootContext, p: &mut PullProgress) {
+    p.updated_ms = Utc::now().timestamp_millis();
+    if let Ok(json) = serde_json::to_string(p) {
+        let _ = ctx.state.kv_set(&pull_key(ctx.id()), &json);
+    }
+}
+
 /// Fetch all pending remote changes and apply them. Returns the number of changes seen.
 pub async fn pull(ctx: &Arc<RootContext>) -> anyhow::Result<usize> {
+    let mut progress = PullProgress {
+        phase: PullPhase::Listing,
+        started_ms: Utc::now().timestamp_millis(),
+        ..Default::default()
+    };
+    let r = pull_inner(ctx, &mut progress).await;
+    progress.phase = PullPhase::Idle;
+    publish_pull(ctx, &mut progress);
+    r
+}
+
+async fn pull_inner(ctx: &Arc<RootContext>, progress: &mut PullProgress) -> anyhow::Result<usize> {
     let root = ctx.state.root(ctx.id())?.context("root no longer exists")?;
+    progress.full = root.cursor.is_none();
+    publish_pull(ctx, progress);
+    if progress.full {
+        tracing::info!(root = ctx.id(), remote = %root.remote_path, "full cloud listing started");
+    }
+    let full_listing = progress.full;
     let Fetched {
         changes,
         cursor,
         full,
         ..
-    } = fetch_changes(
+    } = fetch_changes_with(
         ctx.provider.as_ref(),
         ctx.remote_root(),
         root.cursor.map(ChangeCursor),
+        None,
+        |items, pages| {
+            progress.items = items;
+            progress.pages = pages;
+            if full_listing && pages % 25 == 0 {
+                tracing::info!(root = ctx.id(), items, pages, "cloud listing in progress");
+            }
+            publish_pull(ctx, progress);
+        },
     )
     .await?;
 
     let n = changes.len();
     if n > 0 || full {
+        progress.phase = PullPhase::Applying;
+        progress.full = full;
+        publish_pull(ctx, progress);
+        tracing::info!(root = ctx.id(), changes = n, full, pages = progress.pages, "applying remote changes");
         let c = ctx.clone();
         let result = tokio::task::spawn_blocking(move || apply(&c, &changes, full)).await?;
         if let Err(e) = result {
