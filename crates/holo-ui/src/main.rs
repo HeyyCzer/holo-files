@@ -7,6 +7,7 @@ mod ico;
 mod icon;
 mod snapshot;
 mod tray;
+mod update;
 mod window;
 
 use holo_cli::{

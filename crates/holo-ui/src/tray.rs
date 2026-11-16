@@ -2,13 +2,13 @@
 //! tooltip and menu current, and opens the status window as a separate process.
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Child,
     sync::mpsc,
     time::{Duration, Instant},
 };
 
-use holo_cli::cmd::Ctx;
+use holo_cli::{cmd::Ctx, config::UpdateMode};
 use tray_icon::{
     MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent,
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
@@ -17,9 +17,12 @@ use tray_icon::{
 use crate::{
     actions, icon,
     snapshot::{Snapshot, Status},
+    update::{self, Found},
 };
 
 const REFRESH: Duration = Duration::from_millis(1500);
+/// First automatic update check after startup (leaves the logon burst alone).
+const FIRST_CHECK: Duration = Duration::from_secs(60);
 
 struct Items {
     open: MenuItem,
@@ -27,6 +30,7 @@ struct Items {
     daemon: MenuItem,
     folders: Submenu,
     logs: MenuItem,
+    update: MenuItem,
     quit: MenuItem,
 }
 
@@ -37,6 +41,7 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         daemon: MenuItem::new("Parar daemon", true, None),
         folders: Submenu::new("Abrir pasta", true),
         logs: MenuItem::new("Abrir logs", true, None),
+        update: MenuItem::new(CHECK_TEXT, true, None),
         quit: MenuItem::new("Sair do ícone", true, None),
     };
     let menu = Menu::new();
@@ -48,6 +53,7 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
         &items.daemon,
         &items.logs,
         &PredefinedMenuItem::separator(),
+        &items.update,
         &items.quit,
     ])?;
 
@@ -67,6 +73,13 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
     // Results of start/stop, which run in the background.
     let (done_tx, done_rx) = mpsc::channel::<String>();
     let mut busy = false;
+    // Updates: checked in the background; `found` is the last result.
+    let mode = ctx.cfg.update.mode;
+    let every = Duration::from_secs(ctx.cfg.update.check_interval_hours.max(1) * 3600);
+    let mut next_check = (mode != UpdateMode::Off).then(|| Instant::now() + FIRST_CHECK);
+    let (update_tx, update_rx) = mpsc::channel::<anyhow::Result<Found>>();
+    let mut checking = false;
+    let mut found: Option<Found> = None;
 
     loop {
         pump_messages();
@@ -114,6 +127,21 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
                 );
             } else if id == items.logs.id() {
                 actions::open(&ctx.paths.logs());
+            } else if id == items.update.id() {
+                match &found {
+                    Some(Found::Ready { installer, .. }) => {
+                        if install(installer, &items.update, &mut window) {
+                            return Ok(());
+                        }
+                        found = None;
+                    }
+                    Some(Found::Manual { page, .. }) => actions::open(Path::new(page)),
+                    _ if !checking => {
+                        checking = true;
+                        start_check(&items.update, &update_tx);
+                    }
+                    _ => {}
+                }
             } else if id == items.quit.id() {
                 if let Some(mut c) = window.take() {
                     let _ = c.kill();
@@ -128,6 +156,33 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
             busy = false;
             items.daemon.set_enabled(true);
             last = Instant::now() - REFRESH;
+        }
+
+        if !checking && next_check.is_some_and(|t| Instant::now() >= t) {
+            next_check = Some(Instant::now() + every);
+            checking = true;
+            start_check(&items.update, &update_tx);
+        }
+        if let Ok(result) = update_rx.try_recv() {
+            checking = false;
+            items.update.set_enabled(true);
+            match result {
+                Ok(f) => {
+                    items.update.set_text(update_text(&f));
+                    found = Some(f);
+                }
+                Err(_) => items.update.set_text("Verificar atualizações (falhou)"),
+            }
+        }
+        // `auto`: install once nothing is in flight.
+        if mode == UpdateMode::Auto
+            && status != Status::Syncing
+            && let Some(Found::Ready { installer, .. }) = &found
+        {
+            if install(installer, &items.update, &mut window) {
+                return Ok(());
+            }
+            found = None;
         }
 
         if last.elapsed() >= REFRESH {
@@ -177,6 +232,46 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
 
         wait_for_input(Duration::from_millis(250));
     }
+}
+
+const CHECK_TEXT: &str = "Verificar atualizações";
+
+fn update_text(found: &Found) -> String {
+    match found {
+        Found::UpToDate => format!(
+            "holo está atualizado ({})",
+            update::display(update::current())
+        ),
+        Found::Ready { version, .. } => {
+            format!("Instalar atualização {}", update::display(*version))
+        }
+        Found::Manual { version, .. } => {
+            format!("Baixar {} (abre o GitHub)", update::display(*version))
+        }
+    }
+}
+
+/// Check for updates on a background thread; the result arrives on `tx`.
+fn start_check(item: &MenuItem, tx: &mpsc::Sender<anyhow::Result<Found>>) {
+    item.set_enabled(false);
+    item.set_text("Procurando atualizações…");
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(update::check());
+    });
+}
+
+/// Start the installer; `true` when it is running and the tray should exit (the installer
+/// replaces this executable and starts the tray again).
+fn install(installer: &Path, item: &MenuItem, window: &mut Option<Child>) -> bool {
+    if update::install(installer).is_err() {
+        item.set_text("Falha ao iniciar o instalador");
+        return false;
+    }
+    if let Some(mut c) = window.take() {
+        let _ = c.kill();
+    }
+    true
 }
 
 /// Start the window process. If one is already open, the new one just brings it to

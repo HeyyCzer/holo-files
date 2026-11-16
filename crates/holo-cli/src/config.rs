@@ -12,6 +12,7 @@ pub struct Config {
     pub onedrive: OneDriveConfig,
     pub gdrive: GoogleDriveConfig,
     pub sync: SyncConfig,
+    pub update: UpdateConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -49,6 +50,35 @@ pub struct SyncConfig {
     /// Extra `.gitignore`-style patterns applied to every root.
     pub ignore: Vec<String>,
     pub blocked_hydration_processes: Option<Vec<String>>,
+}
+
+/// What `holo-ui` does when a newer release is published on GitHub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateMode {
+    /// Download in the background and offer it in the tray menu (default).
+    #[default]
+    Notify,
+    /// Download and install as soon as nothing is syncing.
+    Auto,
+    /// Never check.
+    Off,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateConfig {
+    pub mode: UpdateMode,
+    pub check_interval_hours: u64,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            mode: UpdateMode::Notify,
+            check_interval_hours: 24,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +170,12 @@ read_ahead_mib = 4
 full_scan_interval_mins = 60
 use_default_ignores = true
 ignore = []
+
+[update]
+# Updates of the installed version (portable copies only get a notice):
+# "notify" (download and offer in the tray menu), "auto" (install when idle) or "off".
+mode = "notify"
+check_interval_hours = 24
 "#;
 
 impl Config {
@@ -213,5 +249,6 @@ mod tests {
     fn template_parses() {
         let cfg: Config = toml::from_str(TEMPLATE).unwrap();
         assert!(matches!(cfg.sync.concurrency(), Concurrency::Auto { .. }));
+        assert_eq!(cfg.update.mode, UpdateMode::Notify);
     }
 }

@@ -67,7 +67,10 @@ Filename: "{app}\holo.exe"; Parameters: "service install --no-start"; Flags: run
   StatusMsg: "Atualizando o serviço do holo..."; Check: TaskWasInstalled and not DaemonWasRunning
 Filename: "{app}\holo.exe"; Parameters: "run"; Flags: runhidden nowait; \
   Check: DaemonWasRunning and not TaskWasInstalled
-Filename: "{app}\holo-ui.exe"; Parameters: "--tray"; Flags: nowait; Check: TrayWasRunning
+; The auto-update (holo-ui) passes /relaunch=1: the tray may already have exited by the
+; time PrepareToInstall looks for it.
+Filename: "{app}\holo-ui.exe"; Parameters: "--tray"; Flags: nowait; \
+  Check: TrayWasRunning or RelaunchRequested
 Filename: "{app}\holo-ui.exe"; Description: "Abrir o holo"; Flags: postinstall nowait skipifsilent
 
 [Code]
@@ -104,6 +107,11 @@ end;
 function TrayWasRunning(): Boolean;
 begin
   Result := TrayRunning;
+end;
+
+function RelaunchRequested(): Boolean;
+begin
+  Result := ExpandConstant('{param:relaunch|0}') = '1';
 end;
 
 { The daemon only leaves a lock file behind once it has run on this machine. }

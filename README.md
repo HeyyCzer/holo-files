@@ -110,8 +110,22 @@ The tooltip shows running uploads and queue size.
   progress (% / ETA), on-demand downloads with progress, running operations with elapsed time and
   workers, and the operation queue with a filter plus *Release held*, *Discard held* and
   *Retry failed*.
-- **Right-click menu:** open folder, pause/resume, start/stop the daemon, logs.
+- **Right-click menu:** open folder, pause/resume, start/stop the daemon, logs, updates.
 - *Start with Windows* (in the window) adds the tray icon to `HKCU\…\Run`.
+
+**Updates.** The tray checks GitHub's latest release a minute after it starts, then every
+`check_interval_hours`. For the installed version, it downloads `holo-setup-<version>.exe`,
+checks its SHA-256 against the release's `SHA256SUMS.txt`, and offers *Install update vX.Y.Z*
+in the menu. Installing runs the installer silently: it stops the daemon and the tray, replaces
+the binaries and starts both again. Portable copies only get a link to the release page.
+
+```toml
+[update]
+mode = "notify"            # "notify" (default), "auto" (install when nothing is syncing) or "off"
+check_interval_hours = 24
+```
+
+With `"off"`, the menu item still checks on demand.
 
 The UI only reads the same database as `holo status` and never syncs anything itself. Closing
 the window or quitting the tray does not stop the daemon. The window is a separate process that

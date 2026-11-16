@@ -1753,8 +1753,10 @@ dependencies = [
  "holo-core",
  "holo-engine",
  "holo-state",
+ "reqwest",
  "resvg",
  "serde_json",
+ "sha2",
  "tray-icon",
  "windows",
 ]
@@ -3296,6 +3298,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",
