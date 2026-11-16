@@ -6,7 +6,7 @@ use anyhow::Context as _;
 use holo_engine::{EngineConfig, adaptive::Concurrency};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
     pub onedrive: OneDriveConfig,
@@ -15,7 +15,7 @@ pub struct Config {
     pub update: UpdateConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct OneDriveConfig {
     /// Application (client) ID from the Entra ID app registration.
@@ -24,14 +24,14 @@ pub struct OneDriveConfig {
     pub tenant: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct GoogleDriveConfig {
     pub client_id: String,
     pub client_secret: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SyncConfig {
     pub poll_interval_secs: u64,
@@ -65,7 +65,7 @@ pub enum UpdateMode {
     Off,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UpdateConfig {
     pub mode: UpdateMode,
@@ -81,7 +81,7 @@ impl Default for UpdateConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ConcurrencySetting {
     Fixed(usize),
@@ -188,17 +188,43 @@ impl Config {
             std::fs::write(&paths.config_file, TEMPLATE)?;
         }
         let text = std::fs::read_to_string(&paths.config_file)?;
-        let cfg: Self = toml::from_str(&text)
-            .with_context(|| format!("invalid config {}", paths.config_file.display()))?;
+        Self::parse(&text)
+            .with_context(|| format!("invalid config {}", paths.config_file.display()))
+    }
+
+    fn parse(text: &str) -> anyhow::Result<Self> {
+        let cfg: Self = toml::from_str(text)?;
         if let ConcurrencySetting::Mode(m) = &cfg.sync.concurrency
             && !m.eq_ignore_ascii_case("auto")
         {
-            anyhow::bail!(
-                "invalid config {}: sync.concurrency must be \"auto\" or a number, got {m:?}",
-                paths.config_file.display()
-            );
+            anyhow::bail!("sync.concurrency must be \"auto\" or a number, got {m:?}");
         }
         Ok(cfg)
+    }
+
+    /// Write back to `config.toml`, keeping the file's comments, key order and layout:
+    /// only values that changed are rewritten.
+    pub fn save(&self, paths: &Paths) -> anyhow::Result<()> {
+        let existing =
+            std::fs::read_to_string(&paths.config_file).unwrap_or_else(|_| TEMPLATE.into());
+        let out = self.merged_into(&existing)?;
+        if let Some(dir) = paths.config_file.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = paths.config_file.with_extension("toml.tmp");
+        std::fs::write(&tmp, &out)?;
+        std::fs::rename(&tmp, &paths.config_file)
+            .with_context(|| format!("writing {}", paths.config_file.display()))
+    }
+
+    /// `existing` (a config file's text) with this config's values written into it.
+    fn merged_into(&self, existing: &str) -> anyhow::Result<String> {
+        let fresh: toml_edit::DocumentMut = toml::to_string(self)?.parse()?;
+        let mut doc: toml_edit::DocumentMut = existing.parse().unwrap_or_else(|_| fresh.clone());
+        merge(doc.as_table_mut(), fresh.as_table());
+        let out = doc.to_string();
+        Self::parse(&out).context("the saved config would not load")?;
+        Ok(out)
     }
 
     pub fn engine(&self, paths: &Paths) -> EngineConfig {
@@ -221,9 +247,62 @@ impl Config {
     }
 }
 
+/// Make `old` hold `new`'s values: keys missing from `new` are dropped, changed values
+/// replaced in place (keeping their comments), new keys appended.
+fn merge(old: &mut toml_edit::Table, new: &toml_edit::Table) {
+    use toml_edit::Item;
+    let stale: Vec<String> = old
+        .iter()
+        .map(|(k, _)| k.to_owned())
+        .filter(|k| !new.contains_key(k))
+        .collect();
+    for k in stale {
+        old.remove(&k);
+    }
+    for (k, v) in new.iter() {
+        match (old.get_mut(k), v) {
+            (Some(Item::Table(o)), Item::Table(n)) => merge(o, n),
+            (Some(Item::Value(o)), Item::Value(n)) => {
+                let bare = |v: &toml_edit::Value| v.clone().decorated("", "").to_string();
+                if bare(o) != bare(n) {
+                    let decor = o.decor().clone();
+                    *o = n.clone();
+                    *o.decor_mut() = decor;
+                }
+            }
+            _ => {
+                old.insert(k, v.clone());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_keeps_comments_and_only_changes_values() {
+        let mut cfg = Config::parse(TEMPLATE).unwrap();
+        cfg.onedrive.client_id = "abc".into();
+        cfg.onedrive.tenant = Some("consumers".into());
+        cfg.sync.concurrency = ConcurrencySetting::Fixed(4);
+        cfg.sync.ignore = vec!["*.tmp".into()];
+        let out = cfg.merged_into(TEMPLATE).unwrap();
+        assert!(out.contains("# Application (client) ID of your Entra ID"));
+        assert!(out.contains("client_id = \"abc\""));
+        assert!(out.contains("tenant = \"consumers\""));
+        assert!(out.contains("concurrency = 4   # or a fixed number"));
+        assert!(out.contains("ignore = [\"*.tmp\"]"));
+        let back = Config::parse(&out).unwrap();
+        assert_eq!(back.sync.concurrency(), Concurrency::Fixed(4));
+        // Unchanged config: byte-identical file.
+        let same = Config::parse(TEMPLATE)
+            .unwrap()
+            .merged_into(TEMPLATE)
+            .unwrap();
+        assert_eq!(same, TEMPLATE);
+    }
 
     fn sync(toml_text: &str) -> SyncConfig {
         toml::from_str::<Config>(toml_text).unwrap().sync
