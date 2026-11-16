@@ -1,198 +1,281 @@
-# holo-files
+<p align="center">
+  <img src="crates/holo-ui/assets/icons/holo.svg" width="128" alt="holo icon">
+</p>
 
-Cliente OneDrive para Windows com **Files On-Demand**, feito para substituir o cliente
-oficial sem travar o Explorer ao criar, renomear ou apagar arquivos.
+<h1 align="center">holo-files</h1>
 
-- Placeholders nativos do Windows (Cloud Filter API): os arquivos aparecem no Explorer,
-  são baixados só quando abertos e o Explorer ganha "Sempre manter neste dispositivo" e "Liberar espaço".
-- **Callbacks de renomear/apagar são aprovados na hora** e enfileirados; a rede nunca bloqueia o Explorer.
-  A listagem de pastas também não depende da rede (os placeholders são criados antes, a partir do delta).
-- Hidratação parcial por *byte range*, com read-ahead configurável.
-- Ignora lixo de desenvolvimento por padrão (`node_modules/`, `.git/`, `target/`, `dist/`...), nos dois sentidos.
-- Arquivos abertos para escrita por outro programa (logs, bancos) esperam localmente, sem tocar a rede.
-- Nunca sobrescreve em silêncio: conflitos viram `nome (conflict PC AAAA-MM-DD HHMMSS).ext`.
-- Provedores atrás de um trait: OneDrive implementado; Google Drive com scaffold pronto.
+<p align="center">
+  A fast OneDrive client for Windows with native <b>Files On-Demand</b>,<br>
+  built to replace the official client without ever freezing Explorer.
+</p>
 
-## Arquitetura
+<p align="center">
+  <a href="https://github.com/HeyyCzer/holo-files/actions/workflows/ci.yml"><img src="https://github.com/HeyyCzer/holo-files/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/HeyyCzer/holo-files/releases/latest"><img src="https://img.shields.io/github/v/release/HeyyCzer/holo-files?include_prereleases" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4" alt="Windows 10/11">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
+</p>
 
-```
-crates/
-  holo-core      modelo, trait CloudProvider, RelPath, ignore, nomes Windows, QuickXorHash
-  holo-auth      OAuth 2.0 PKCE (loopback) genérico + tokens criptografados com DPAPI
-  holo-state     SQLite: accounts, roots, items (base do 3-way), ops (journal), kv
-  holo-onedrive  Microsoft Graph: delta, download ranged, upload simples/sessão, retry/429
-  holo-gdrive    scaffold do Google Drive (OAuth pronto, métodos NotImplemented)
-  holo-cfapi     Files On-Demand: registro do sync root, placeholders, callbacks
-  holo-engine    motor de sync (agnóstico de provedor e de filesystem)
-  holo-cli       binário `holo` (+ lib usada pela UI)
-  holo-ui        binário `holo-ui`: ícone na bandeja + janela de status
-```
+---
 
-Fluxo:
+## Why
 
-```
-remoto ─ changes() ─► plan (função pura) ─► aplica no LocalTree ─► SQLite
-Explorer ─ callback CF ─► LocalEvent ─► debounce/classifica ─► journal (ops) ─► executor ─► remoto
-leitura de placeholder ─ fetch_data ─► download do intervalo ─► escrita alinhada em 4 KiB
-```
+- **Native placeholders** (Windows Cloud Filter API): files show up in Explorer, download only
+  when opened, and Explorer gets *Always keep on this device* / *Free up space*.
+- **Explorer never waits on the network.** Rename/delete callbacks are approved immediately and
+  queued; folder listings come from placeholders created ahead of time from the delta feed.
+- **Partial hydration** by byte range, with configurable read-ahead.
+- **Dev-friendly defaults:** `node_modules/`, `.git/`, `target/`, `dist/`... are ignored in both
+  directions, plus per-folder `.holoignore` files.
+- **Files held open for writing** by another program (logs, databases) wait locally without
+  touching the network.
+- **Never overwrites silently:** conflicts become `name (conflict PC YYYY-MM-DD HHMMSS).ext`.
+- **Adaptive parallel uploads** that back off on HTTP 429/503 and when you're using the PC.
+- **Pluggable providers:** OneDrive is implemented; Google Drive is scaffolded.
 
-O motor só acessa o disco pelo trait `LocalTree`. Assim toda a lógica (plano, conflitos,
-uploads, exclusões) é testada com um filesystem em memória e um provedor falso.
+## Download
 
-**Novo provedor** = implementar `holo_core::CloudProvider` e registrar em
-`holo-cli/src/providers.rs`. As diferenças entre provedores ficam em `Capabilities`
-(delta por pasta ou por drive, algoritmo de hash, nomes duplicados).
+Grab the latest build from [**Releases**](https://github.com/HeyyCzer/holo-files/releases/latest):
 
-## Setup
+| File | Use it when |
+|---|---|
+| `holo-setup-<version>.exe` | **Recommended.** Per-user installer, no admin. Adds `holo` to your PATH, a Start menu entry, optional tray icon at logon, and handles upgrades. |
+| `holo-<version>-windows-x64.zip` | **Portable.** Unzip anywhere; keep `holo.exe` and `holo-ui.exe` in the same folder. |
+| `holo.exe` / `holo-ui.exe` | Bare executables (CLI / tray + status window). |
 
-1. **Registrar o app** (Azure Portal → Entra ID → Registros de aplicativo):
-   - contas: *qualquer diretório organizacional + contas Microsoft pessoais*
-   - plataforma: *Aplicativos móveis e da área de trabalho*, redirect `http://localhost`
-   - *Permitir fluxos de cliente público*: **Sim**
-   - permissões delegadas: `Files.ReadWrite`, `User.Read`, `offline_access`
-2. Instalar: `.\installer\build.ps1` gera `target\installer\holo-setup-<versão>.exe`
-   ([Inno Setup 6](https://jrsoftware.org/isinfo.php): `winget install JRSoftware.InnoSetup`).
-   O instalador é por usuário, sem admin:
-   - `holo.exe` e `holo-ui.exe` vão para `%LOCALAPPDATA%\Programs\holo`;
-   - `holo` entra no PATH do usuário (terminal novo);
-   - "holo" aparece no Menu Iniciar (abre a janela e o ícone da bandeja);
-   - opcional: ícone na bandeja ao entrar no Windows.
+<details>
+<summary>What the installer does</summary>
 
-   Para atualizar, rode o instalador novo por cima. Ele fecha o tray e para o daemon antes
-   de trocar os exes, re-aponta a tarefa do `holo service` para o local novo e religa o
-   daemon só se ele estava rodando. A desinstalação para tudo e pergunta se também remove
-   as pastas do Explorer e os dados (padrão: não; reinstalar continua de onde parou).
+- Installs `holo.exe` and `holo-ui.exe` into `%LOCALAPPDATA%\Programs\holo`.
+- Adds `holo` to the user PATH (open a new terminal).
+- Adds **holo** to the Start menu (opens the status window and tray icon).
+- Optional: shows the tray icon at Windows logon.
 
-   Sem instalador: `cargo build --release` (`holo.exe` e `holo-ui.exe` precisam ficar na mesma pasta).
-3. `holo config` mostra onde fica o `config.toml`. Coloque o *Client ID* em `[onedrive].client_id`.
-4. Usar:
+To upgrade, run the new installer over the old one. It closes the tray and stops the daemon
+before replacing the executables, re-points the `holo service` logon task to the new location,
+and restarts the daemon only if it was running. Uninstalling stops everything and asks whether
+to also remove the Explorer folders and holo's data (default: no, so reinstalling picks up
+where it left off).
+</details>
+
+## Quick start
+
+1. **Register an app** in the Azure Portal (*Entra ID → App registrations → New registration*):
+   - Supported accounts: *any organizational directory + personal Microsoft accounts*
+   - Platform: *Mobile and desktop applications*, redirect URI `http://localhost`
+   - *Allow public client flows*: **Yes**
+   - Delegated permissions: `Files.ReadWrite`, `User.Read`, `offline_access`
+2. Run `holo config` to see where `config.toml` lives, and put the *Application (client) ID*
+   in `[onedrive].client_id`.
+3. Sign in and add a folder:
 
 ```powershell
-holo login                                  # abre o navegador
-holo add-root D:\OneDrive\Teste --remote /holo-test --create   # --create: cria a pasta remota (e pais) se não existir
-holo run                                    # foreground; Ctrl+C para parar
-holo service install                        # roda em background no logon (tarefa agendada por usuário, sem janela)
-holo service stop|start|status|uninstall     # stop = desligamento limpo
-holo status                                 # --stream: acompanha ao vivo (itens, pending/held/failed com deltas)
-holo ops                                    # journal; `release`/`discard` após o guard de exclusão em massa
-holo ops --stream                           # acompanha o journal ao vivo: + nova, ~ mudou, - concluída/descartada
-holo pause | resume                         # pausa envios e leitura da nuvem (abrir sob demanda continua)
-holo pin  D:\OneDrive\Teste\video.mp4       # sempre manter neste dispositivo
-holo free D:\OneDrive\Teste\video.mp4       # liberar espaço
-holo remove-root D:\OneDrive\Teste --yes
+holo login                                                     # opens the browser
+holo add-root D:\OneDrive\Test --remote /holo-test --create    # --create: create the remote folder (and parents)
+holo run                                                       # foreground; Ctrl+C to stop
+holo service install                                           # or: run in the background at logon
 ```
 
-> Comece com uma **pasta de teste** (`--remote /holo-test`), não com o drive inteiro.
+> Start with a **test folder** (`--remote /holo-test`), not your whole drive.
 
-### Interface (`holo-ui`)
+## Usage
 
-`holo-ui.exe` coloca um ícone na bandeja com o estado geral:
-✓ verde sincronizado · ↑ azul sincronizando · ‖ cinza pausado · ! vermelho precisa de atenção
-(falhas ou operações retidas) · ✕ daemon parado. O tooltip mostra quantos envios estão
-rodando e o tamanho da fila.
+```powershell
+holo status                       # per-root status; --stream follows it live
+holo ops                          # operation journal; `release` / `discard` after the mass-delete guard
+holo ops --stream                 # live journal: + new, ~ changed, - done/discarded
+holo pause | resume               # pause uploads and cloud reads (open-on-demand keeps working)
+holo pin  D:\OneDrive\Test\video.mp4    # always keep on this device
+holo free D:\OneDrive\Test\video.mp4    # free up space
+holo service stop|start|status|uninstall   # stop = clean shutdown
+holo remove-root D:\OneDrive\Test --yes
+holo --help                       # everything else
+```
 
-- **Clique** abre a janela: cada root com itens/fila/retidas/falhas, listagem da nuvem
-  em andamento (%/ETA), ops rodando com tempo decorrido e workers; abaixo, a fila de
-  operações com filtro e os botões *Liberar retidas*, *Descartar retidas* e *Repetir falhas*.
-- **Menu (botão direito)**: abrir pasta, pausar/retomar, iniciar/parar o daemon, logs.
-- *Iniciar com o Windows* (na janela) põe o ícone em `HKCU\…\Run`.
+### Tray and status window (`holo-ui`)
 
-A UI só lê o mesmo banco que o `holo status` e não sincroniza nada. Fechar a janela ou
-sair do ícone não para o daemon. A janela é um processo separado que só existe enquanto
-está aberta; o ícone sozinho usa ~17 MB.
+`holo-ui.exe` puts an icon in the system tray that reflects the overall state:
+
+| | State |
+|---|---|
+| <img src="crates/holo-ui/assets/icons/holo-synced.svg" width="24"> | Up to date |
+| <img src="crates/holo-ui/assets/icons/holo-syncing.svg" width="24"> | Syncing |
+| <img src="crates/holo-ui/assets/icons/holo-paused.svg" width="24"> | Paused |
+| <img src="crates/holo-ui/assets/icons/holo-attention.svg" width="24"> | Needs attention (failures or held operations) |
+| <img src="crates/holo-ui/assets/icons/holo-stopped.svg" width="24"> | Daemon stopped |
+
+The tooltip shows running uploads and queue size.
+
+- **Click** opens the window: each root with items / queue / held / failed, cloud listing in
+  progress (% / ETA), on-demand downloads with progress, running operations with elapsed time and
+  workers, and the operation queue with a filter plus *Release held*, *Discard held* and
+  *Retry failed*.
+- **Right-click menu:** open folder, pause/resume, start/stop the daemon, logs.
+- *Start with Windows* (in the window) adds the tray icon to `HKCU\…\Run`.
+
+The UI only reads the same database as `holo status` and never syncs anything itself. Closing
+the window or quitting the tray does not stop the daemon. The window is a separate process that
+exists only while open; the tray icon alone uses ~17 MB.
 
 ### Dry run (`holo plan`)
 
-Compara nuvem × pasta local × último sync e lista o que seria feito, com a direção,
-**sem alterar nada** (nem disco, nem banco, nem nuvem). Usa as mesmas funções de decisão do sync real.
+Compares cloud × local folder × last sync and lists what would happen, with direction,
+**without changing anything** (disk, database or cloud). It uses the same decision functions as
+the real sync.
 
 ```powershell
-holo plan D:\Holo --remote /            # antes do add-root: preview do primeiro sync (cold start)
-holo plan D:\Holo                       # root existente: mudanças desde o último sync
-holo plan D:\Holo --full                # root existente: comparação completa
-holo plan D:\Holo --no-hash             # não lê arquivos locais (mais rápido; marca "unverified")
-holo plan D:\Holo --json plano.json --limit 0
+holo plan D:\Holo --remote /      # before add-root: preview the first sync (cold start)
+holo plan D:\Holo                 # existing root: changes since the last sync
+holo plan D:\Holo --full          # existing root: full comparison
+holo plan D:\Holo --no-hash       # don't read local files (faster; marked "unverified")
+holo plan D:\Holo --json plan.json --show 0
 ```
 
-Legenda: `↓` nuvem→PC, `↑` PC→nuvem, `⇄` conflito (os dois lados), `·` sem transferência agora
-(placeholder, link, mover). O resumo mostra quanto trafega já e quanto fica disponível sob demanda.
+Legend: `↓` cloud → PC, `↑` PC → cloud, `⇄` conflict (both sides), `·` no transfer now
+(placeholder, link, move). The summary shows how much transfers now and how much stays available
+on demand.
 
-> No Git Bash, use `MSYS_NO_PATHCONV=1` ou o PowerShell: o Bash converte `--remote /` em `C:/Program Files/Git/`.
+> In Git Bash use `MSYS_NO_PATHCONV=1` or PowerShell: Bash rewrites `--remote /` into `C:/Program Files/Git/`.
 
-### Ignorar arquivos (`.holoignore`)
+### Ignoring files (`.holoignore`)
 
-Sintaxe do `.gitignore`. Vale em qualquer pasta do root: os padrões são relativos à pasta do
-arquivo e o `.holoignore` mais fundo tem prioridade. `./x` é aceito como `/x` (só nesta pasta).
+`.gitignore` syntax, valid in any folder of a root: patterns are relative to the file's folder
+and the deepest `.holoignore` wins. `./x` is accepted as `/x` (this folder only).
 
 ```gitignore
 # Documents\Rockstar Games\Launcher\.holoignore
 *.log
 ```
 
-Criar, editar ou apagar um `.holoignore` vale na hora (o daemon recarrega) e tira da fila os
-uploads pendentes que passaram a ser ignorados. Itens já enviados continuam na nuvem.
+Creating, editing or deleting a `.holoignore` takes effect immediately (the daemon reloads it)
+and drops pending uploads that became ignored. Items already uploaded stay in the cloud.
 
-### Uploads em paralelo (`[sync].concurrency`)
+### Parallel uploads (`[sync].concurrency`)
 
 ```toml
 [sync]
-concurrency = "auto"   # ou um número fixo
+concurrency = "auto"   # or a fixed number
 concurrency_min = 1
 concurrency_max = 16
 ```
 
-No modo `auto` o número de uploads simultâneos é reavaliado a cada 2 s:
+In `auto` mode the number of simultaneous uploads is re-evaluated every 2 s:
 
-- **fila**: nunca mais workers que ops pendentes;
-- **uso do PC**: sem teclado/mouse há 5 min → máximo; usando → metade; usando com CPU ≥ 75% → mínimo; na bateria → metade;
-- **servidor**: HTTP 429/503 → corta pela metade e segura 30 s.
+- **queue:** never more workers than pending operations;
+- **PC usage:** no keyboard/mouse for 5 min → max; in use → half; in use with CPU ≥ 75% → min; on battery → half;
+- **server:** HTTP 429/503 → halve and hold for 30 s.
 
-Sobe dobrando até o primeiro throttle e depois +1 por ciclo. `holo status --stream` mostra o valor atual e o motivo.
+It doubles until the first throttle, then +1 per cycle. `holo status --stream` shows the
+current value and why.
 
-## Segurança dos dados
+## Data safety
 
-- Exclusões remotas vão para a lixeira do OneDrive; o conteúdo local hidratado de itens apagados
-  remotamente vai para `%LOCALAPPDATA%\holo\data\trash`.
-- Arquivo editado localmente e apagado no remoto é **reenviado como novo**, nunca descartado.
-- Exclusão rechecada antes de executar (desfazer exclusão / mover não apaga no remoto).
-- Mais de `mass_delete_threshold` exclusões por minuto ficam **retidas** até `holo ops release`.
-- Upload com `If-Match` (eTag); se o remoto mudou, a versão local vira cópia de conflito.
-- `USN` do arquivo protege contra marcar como sincronizado um arquivo editado durante o upload.
+- Remote deletions go to the OneDrive recycle bin; hydrated local content of items deleted
+  remotely goes to `%LOCALAPPDATA%\holo\data\trash`.
+- A file edited locally and deleted remotely is **re-uploaded as new**, never discarded.
+- Deletions are re-checked before running (undoing a delete or a move doesn't delete remotely).
+- More than `mass_delete_threshold` deletions per minute are **held** until `holo ops release`.
+- Uploads use `If-Match` (eTag); if the remote changed, the local version becomes a conflict copy.
+- The file's `USN` prevents marking a file as synced if it was edited during the upload.
 
-## Testes
+## Architecture
 
-```powershell
-cargo test --workspace                                                     # unit + cenários do motor
-cargo test -p holo-cfapi --test real_sync_root -- --ignored --nocapture    # driver Cloud Filter real
+```
+crates/
+  holo-core      model, CloudProvider trait, RelPath, ignore rules, Windows names, QuickXorHash
+  holo-auth      generic OAuth 2.0 PKCE (loopback) + DPAPI-encrypted tokens
+  holo-state     SQLite: accounts, roots, items (3-way base), ops (journal), kv
+  holo-onedrive  Microsoft Graph: delta, ranged download, simple/session upload, retry/429
+  holo-gdrive    Google Drive scaffold (OAuth ready, methods NotImplemented)
+  holo-cfapi     Files On-Demand: sync root registration, placeholders, callbacks
+  holo-engine    sync engine (provider- and filesystem-agnostic)
+  holo-cli       `holo` binary (+ library used by the UI)
+  holo-ui        `holo-ui` binary: tray icon + status window
 ```
 
-O teste do driver real registra um sync root temporário em `target/`, cria placeholders,
-hidrata a partir de outro processo (PowerShell), valida os bytes, libera espaço, faz pin,
-renomeia e apaga, e confere as notificações.
-
-### Coverage
-
-Mostra quais linhas os testes executam (verde) e quais nunca rodam (vermelho), por arquivo.
-Usa [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov):
-
-```powershell
-rustup component add llvm-tools-preview    # uma vez
-cargo install cargo-llvm-cov --locked      # uma vez
-
-cargo llvm-cov --workspace --html --open   # relatório HTML (target/llvm-cov/html) no navegador
-cargo llvm-cov --workspace --summary-only  # tabela no terminal
-cargo llvm-cov --workspace --lcov --output-path lcov.info   # para o VS Code (Coverage Gutters)
+```
+cloud ── changes() ──► plan (pure fn) ──► apply to LocalTree ──► SQLite
+Explorer ── CF callback ──► LocalEvent ──► debounce/classify ──► journal (ops) ──► executor ──► cloud
+placeholder read ── fetch_data ──► ranged download ──► 4 KiB-aligned write
 ```
 
-O teste do driver real (`--ignored`) fica fora; para incluí-lo, adicione `-- --include-ignored`.
+The engine touches the disk only through the `LocalTree` trait, so all of its logic (plan,
+conflicts, uploads, deletions) is tested against an in-memory filesystem and a fake provider.
 
-## Limitações conhecidas
+**Adding a provider** = implement `holo_core::CloudProvider` and register it in
+`holo-cli/src/providers.rs`. Provider differences live in `Capabilities` (per-folder vs.
+per-drive delta, hash algorithm, duplicate names).
 
-- **Ainda não testado contra uma conta OneDrive real** (falta um Client ID): login, delta,
-  upload e download do Graph são cobertos só por testes de parsing/unidade.
-- Sessão de upload grande retoma dentro do processo, mas não depois de um crash (recomeça).
-- Contas business usam delta da raiz do drive inteiro (o Graph não suporta delta por pasta lá).
-- Sem IPC: a UI e a CLI conversam com o daemon pelo banco (kv) e pelo evento de parada.
-- `holo add-root`/`plan` recusam pastas que já são sync root de outro provedor (ex.: OneDrive oficial).
-- Itens compartilhados ("Adicionar ao meu OneDrive") e pacotes OneNote são ignorados.
-- Hash não é validado após a hidratação (só tamanho/TLS).
+## Building from source
+
+Requires Rust (stable, ≥ 1.93) on Windows.
+
+```powershell
+cargo build --release              # target\release\holo.exe + holo-ui.exe (keep them together)
+.\installer\build.ps1              # + target\installer\holo-setup-<version>.exe
+```
+
+The installer needs [Inno Setup 6](https://jrsoftware.org/isinfo.php)
+(`winget install JRSoftware.InnoSetup`).
+
+Icons live in [`crates/holo-ui/assets/icons`](crates/holo-ui/assets/icons): `holo.svg` is the
+app icon and each `holo-<status>.svg` is a complete tray variant. `build.rs` rasterizes them
+(the `.ico` embedded in the executable and the tray/window pixels), so editing an SVG is enough.
+
+### Releases
+
+[`release.yml`](.github/workflows/release.yml) builds the installer, the portable zip and the
+bare executables on every `v*` tag and attaches them to a GitHub release. The tag must match
+the workspace version in `Cargo.toml`:
+
+```powershell
+git tag v0.1.0; git push origin v0.1.0
+```
+
+Running the workflow manually only builds the artifacts (downloadable from the run).
+
+### Tests
+
+```powershell
+cargo test --workspace                                                     # unit + engine scenarios
+cargo test -p holo-cfapi --test real_sync_root -- --ignored --nocapture    # real Cloud Filter driver
+```
+
+The real-driver test registers a temporary sync root under `target/`, creates placeholders,
+hydrates them from another process (PowerShell), checks the bytes, frees space, pins, renames,
+deletes and verifies the notifications.
+
+<details>
+<summary>Coverage</summary>
+
+Uses [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov):
+
+```powershell
+rustup component add llvm-tools-preview    # once
+cargo install cargo-llvm-cov --locked      # once
+
+cargo llvm-cov --workspace --html --open   # HTML report (target/llvm-cov/html)
+cargo llvm-cov --workspace --summary-only  # table in the terminal
+cargo llvm-cov --workspace --lcov --output-path lcov.info   # for VS Code (Coverage Gutters)
+```
+
+The real-driver test (`--ignored`) is excluded; add `-- --include-ignored` to include it.
+</details>
+
+## Known limitations
+
+- **Not yet validated against a real OneDrive account at scale**: login, delta, upload and
+  download are covered mainly by parsing/unit tests.
+- Large upload sessions resume within the process, but not after a crash (they restart).
+- Business accounts use whole-drive delta (Graph doesn't support per-folder delta there).
+- No IPC: the UI and CLI talk to the daemon through the database (kv) and a stop event.
+- `holo add-root` / `plan` refuse folders that are already a sync root of another provider
+  (e.g. the official OneDrive client).
+- Shared items ("Add to my OneDrive") and OneNote packages are ignored.
+- Hashes are not validated after hydration (only size/TLS).
+
+See [ROADMAP.md](ROADMAP.md) for what's planned.
+
+## License
+
+MIT
