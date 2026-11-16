@@ -77,39 +77,101 @@ pub fn section(ui: &mut egui::Ui, title: &str) {
 
 const ON_ACCENT: Color32 = Color32::from_rgb(0x06, 0x1a, 0x22);
 
-fn styled(
+/// Button with its own colours that still reacts to hover and press. (`Button::fill`
+/// would freeze the background: egui then skips its hover/active visuals.)
+pub struct Styled {
     icon: Option<Icon>,
-    text: String,
+    text: RichText,
     color: Color32,
     fill: Color32,
     stroke: Stroke,
-) -> egui::Button<'static> {
-    let text = RichText::new(text).color(color);
-    let b = match icon {
-        Some(i) => egui::Button::new((i.image(15.0, color), text)),
-        None => egui::Button::new(text),
-    };
-    b.fill(fill).stroke(stroke)
 }
 
-pub fn primary(text: impl Into<String>) -> egui::Button<'static> {
-    styled(None, text.into(), ON_ACCENT, theme::CYAN, Stroke::NONE)
+impl egui::Widget for Styled {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        let Self {
+            icon,
+            text,
+            color,
+            fill,
+            stroke,
+        } = self;
+        ui.scope(|ui| {
+            let (hover, press) = if fill.a() == 0 {
+                (color.linear_multiply(0.14), color.linear_multiply(0.24))
+            } else {
+                (
+                    fill.lerp_to_gamma(Color32::WHITE, 0.14),
+                    fill.lerp_to_gamma(Color32::BLACK, 0.12),
+                )
+            };
+            let hover_stroke = if stroke.width > 0.0 {
+                Stroke::new(stroke.width, color.linear_multiply(0.9))
+            } else {
+                Stroke::NONE
+            };
+            let w = &mut ui.visuals_mut().widgets;
+            for (v, bg, st) in [
+                (&mut w.inactive, fill, stroke),
+                (&mut w.hovered, hover, hover_stroke),
+                (&mut w.active, press, hover_stroke),
+            ] {
+                v.bg_fill = bg;
+                v.weak_bg_fill = bg;
+                v.bg_stroke = st;
+                v.expansion = 0.0;
+            }
+            let text = text.color(color);
+            let b = match icon {
+                Some(i) => egui::Button::new((i.image(15.0, color), text)),
+                None => egui::Button::new(text),
+            };
+            ui.add(b).on_hover_cursor(egui::CursorIcon::PointingHand)
+        })
+        .inner
+    }
 }
 
-pub fn primary_icon(icon: Icon, text: impl Into<String>) -> egui::Button<'static> {
+fn styled(
+    icon: Option<Icon>,
+    text: RichText,
+    color: Color32,
+    fill: Color32,
+    stroke: Stroke,
+) -> Styled {
+    Styled {
+        icon,
+        text,
+        color,
+        fill,
+        stroke,
+    }
+}
+
+pub fn primary(text: impl Into<String>) -> Styled {
     styled(
-        Some(icon),
-        text.into(),
+        None,
+        RichText::new(text.into()).strong(),
         ON_ACCENT,
         theme::CYAN,
         Stroke::NONE,
     )
 }
 
-pub fn danger_button(text: impl Into<String>) -> egui::Button<'static> {
+pub fn primary_icon(icon: Icon, text: impl Into<String>) -> Styled {
+    styled(
+        Some(icon),
+        RichText::new(text.into()).strong(),
+        ON_ACCENT,
+        theme::CYAN,
+        Stroke::NONE,
+    )
+}
+
+pub fn danger_button(text: impl Into<String>) -> Styled {
     styled(
         Some(Icon::Trash),
-        text.into(),
+        RichText::new(text.into()).strong(),
         Color32::WHITE,
         theme::DANGER.linear_multiply(0.85),
         Stroke::NONE,
@@ -117,10 +179,10 @@ pub fn danger_button(text: impl Into<String>) -> egui::Button<'static> {
 }
 
 /// Normal button with an icon.
-pub fn button(icon: Icon, text: impl Into<String>) -> egui::Button<'static> {
+pub fn button(icon: Icon, text: impl Into<String>) -> Styled {
     styled(
         Some(icon),
-        text.into(),
+        RichText::new(text.into()),
         theme::TEXT,
         theme::CARD_HI,
         Stroke::new(1.0, theme::BORDER),
@@ -128,20 +190,20 @@ pub fn button(icon: Icon, text: impl Into<String>) -> egui::Button<'static> {
 }
 
 /// Outline button tinted with `color` (secondary destructive actions).
-pub fn outline(text: impl Into<String>, color: Color32) -> egui::Button<'static> {
+pub fn outline(text: impl Into<String>, color: Color32) -> Styled {
     styled(
         None,
-        text.into(),
+        RichText::new(text.into()),
         color,
         Color32::TRANSPARENT,
         Stroke::new(1.0, color.linear_multiply(0.6)),
     )
 }
 
-pub fn outline_icon(icon: Icon, text: impl Into<String>, color: Color32) -> egui::Button<'static> {
+pub fn outline_icon(icon: Icon, text: impl Into<String>, color: Color32) -> Styled {
     styled(
         Some(icon),
-        text.into(),
+        RichText::new(text.into()),
         color,
         Color32::TRANSPARENT,
         Stroke::new(1.0, color.linear_multiply(0.6)),
@@ -199,20 +261,39 @@ pub fn stat(ui: &mut egui::Ui, name: &str, n: u64, color: Option<Color32>) {
     ui.add_space(18.0);
 }
 
-/// A value the user copies into another app (e.g. the Azure portal).
+/// A value the user copies into another app (e.g. the Azure portal). Shows
+/// "Copiado" with a check for a moment after a click.
 pub fn copy_chip(ui: &mut egui::Ui, value: &str) {
-    let r = ui
-        .add(
-            egui::Button::new((
-                Icon::Copy.image(13.0, theme::WEAK),
-                RichText::new(value).monospace().color(theme::MINT),
-            ))
-            .fill(theme::INPUT)
-            .stroke(Stroke::new(1.0, theme::BORDER)),
+    const FEEDBACK: f64 = 1.5;
+    let id = egui::Id::unique(("copy-chip", value));
+    let now = ui.input(|i| i.time);
+    let copied_at: Option<f64> = ui.data(|d| d.get_temp(id));
+    let copied = copied_at.is_some_and(|t| now - t < FEEDBACK);
+    let (icon, text, color) = if copied {
+        (
+            Icon::Check,
+            RichText::new("Copiado!").monospace(),
+            theme::MINT,
         )
-        .on_hover_text("Copiar");
+    } else {
+        (Icon::Copy, RichText::new(value).monospace(), theme::MINT)
+    };
+    let r = ui
+        .add(styled(
+            Some(icon),
+            text,
+            color,
+            theme::INPUT,
+            Stroke::new(1.0, theme::BORDER),
+        ))
+        .on_hover_text("Clique para copiar");
     if r.clicked() {
         ui.ctx().copy_text(value.to_owned());
+        ui.data_mut(|d| d.insert_temp(id, now));
+    }
+    if copied {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f64(FEEDBACK));
     }
 }
 
