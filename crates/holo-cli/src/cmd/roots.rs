@@ -174,8 +174,15 @@ pub fn remove(ctx: &Ctx, key: &str, yes: bool) -> anyhow::Result<()> {
     {
         let account = ctx.account(Some(&root.account_id))?;
         let spec = sync_root_spec(&root, &account.display_name, account.provider);
-        if let Err(e) = holo_cfapi::root::unregister(&spec) {
-            eprintln!("warning: unregister failed ({e}); is `holo run` still running?");
+        // Keep the DB record on failure: deleting it would orphan the Windows
+        // registration (Explorer entry stays) with no way to retry from holo.
+        if holo_cfapi::root::is_registered(&spec).unwrap_or(true) {
+            holo_cfapi::root::unregister(&spec).with_context(|| {
+                format!(
+                    "unregistering {} from Windows failed; stop `holo run` / `holo service` and retry",
+                    root.local_path
+                )
+            })?;
         }
     }
     ctx.state.delete_root(&root.id)?;
