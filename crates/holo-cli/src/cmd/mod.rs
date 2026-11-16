@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod live;
 pub mod misc;
 pub mod plan;
 pub mod roots;
@@ -64,4 +65,20 @@ pub fn human_bytes(n: u64) -> String {
     } else {
         format!("{v:.1} {}", UNITS[u])
     }
+}
+
+/// `holo run` holds the lock file exclusively while it runs.
+pub fn daemon_running(ctx: &Ctx) -> bool {
+    let lock = ctx.paths.lock();
+    if !lock.exists() {
+        return false;
+    }
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        o.share_mode(0);
+    }
+    o.open(lock).is_err()
 }

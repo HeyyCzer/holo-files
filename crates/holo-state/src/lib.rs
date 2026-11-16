@@ -314,6 +314,20 @@ impl StateStore {
         })
     }
 
+    /// Runnable pending ops for the root, oldest first.
+    pub fn due_ops(&self, root_id: &str, limit: usize) -> StateResult<Vec<OpRecord>> {
+        self.with(|c| {
+            let mut s = c.prepare(&format!(
+                "{OP_SELECT} WHERE root_id = ?1 AND state = 'pending' AND not_before <= ?2 ORDER BY id LIMIT ?3"
+            ))?;
+            s.query_map(
+                params![root_id, ms(Utc::now()), limit as i64],
+                OpRecord::from_row,
+            )?
+            .collect()
+        })
+    }
+
     /// When the next deferred op becomes runnable, if any.
     pub fn next_op_due(&self, root_id: &str) -> StateResult<Option<DateTime<Utc>>> {
         self.with(|c| {

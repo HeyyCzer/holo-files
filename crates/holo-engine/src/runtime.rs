@@ -54,6 +54,7 @@ pub async fn start_root(
         wake_ops: Notify::new(),
         events: events_tx,
         pull_failures: Default::default(),
+        dir_lock: Default::default(),
     });
 
     #[cfg(windows)]

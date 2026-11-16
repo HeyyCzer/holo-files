@@ -34,6 +34,8 @@ pub struct GoogleDriveConfig {
 #[serde(default)]
 pub struct SyncConfig {
     pub poll_interval_secs: u64,
+    /// Uploads/journal ops in parallel. The HTTP limit is this + 4, so opening
+    /// files (hydration) never waits behind a full upload queue.
     pub concurrency: usize,
     pub mass_delete_threshold: usize,
     /// Minimum MiB fetched per hydration request.
@@ -49,7 +51,7 @@ impl Default for SyncConfig {
     fn default() -> Self {
         Self {
             poll_interval_secs: 30,
-            concurrency: 4,
+            concurrency: 8,
             mass_delete_threshold: 200,
             read_ahead_mib: 4,
             full_scan_interval_mins: 60,
@@ -104,7 +106,7 @@ client_id = ""
 
 [sync]
 poll_interval_secs = 30
-concurrency = 4
+concurrency = 8   # uploads in parallel
 mass_delete_threshold = 200
 read_ahead_mib = 4
 full_scan_interval_mins = 60
@@ -136,6 +138,7 @@ impl Config {
             use_default_ignores: s.use_default_ignores,
             ignore: s.ignore.clone(),
             trash_dir: paths.trash(),
+            op_workers: s.concurrency.max(1),
             ..EngineConfig::default()
         };
         if let Some(b) = &s.blocked_hydration_processes {

@@ -29,6 +29,9 @@ pub struct RootContext {
     pub events: mpsc::UnboundedSender<LocalEvent>,
     /// Consecutive failed remote applies (see `remote::pull`).
     pub pull_failures: AtomicU32,
+    /// Serializes remote folder creation so parallel ops don't race to create
+    /// the same parent.
+    pub dir_lock: tokio::sync::Mutex<()>,
 }
 
 impl RootContext {

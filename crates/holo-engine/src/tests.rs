@@ -524,6 +524,7 @@ fn harness() -> Harness {
         wake_ops: Notify::new(),
         events: tx,
         pull_failures: Default::default(),
+        dir_lock: Default::default(),
     });
     Harness {
         ctx,
@@ -1197,4 +1198,60 @@ fn preview_partial_sample_never_infers_deletes() {
         "nothing to do, and b.txt must not be reported as deleted: {:?}",
         r.entries
     );
+}
+
+#[tokio::test]
+async fn parallel_executor_uploads_everything_and_creates_each_folder_once() {
+    let h = harness();
+    let mut files = Vec::new();
+    for d in ["a", "a/b", "c"] {
+        for i in 0..10 {
+            let rel = format!("{d}/f{i}.txt");
+            h.tree.local_file(&rel, rel.as_bytes());
+            files.push(rel);
+        }
+    }
+    for f in &files {
+        ops::enqueue(&h.ctx, &LocalOp::Upload { path: rp(f) }).unwrap();
+    }
+
+    let (stop, rx) = tokio::sync::watch::channel(false);
+    let exec = tokio::spawn(ops::run(h.ctx.clone(), rx));
+    for _ in 0..200 {
+        if h.ctx.state.ops(None).unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    stop.send(true).unwrap();
+    exec.await.unwrap();
+
+    assert!(h.ctx.state.ops(None).unwrap().is_empty(), "journal drained");
+    for f in &files {
+        let ph = h.tree.get(f).unwrap().ph.unwrap();
+        assert!(ph.in_sync, "{f} uploaded");
+    }
+    let folders: Vec<String> = h
+        .provider
+        .items
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|i| i.kind == ItemKind::Folder)
+        .map(|i| i.name.clone())
+        .collect();
+    let mut sorted = folders.clone();
+    sorted.sort();
+    assert_eq!(sorted, ["a", "b", "c"], "no duplicate folders: {folders:?}");
+
+    let progress: ops::ExecProgress = serde_json::from_str(
+        &h.ctx
+            .state
+            .kv_get(&ops::progress_key("r"))
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(progress.done, files.len() as u64);
+    assert!(progress.running.is_empty());
 }

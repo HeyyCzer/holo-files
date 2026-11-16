@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
 
-use super::Ctx;
+use super::{Ctx, daemon_running};
 use crate::ServiceAction;
 
 const TASK_NAME: &str = "HoloFiles";
@@ -141,22 +141,6 @@ fn status(ctx: &Ctx) -> anyhow::Result<()> {
     );
     println!("logs   : {}", ctx.paths.logs().display());
     Ok(())
-}
-
-/// `holo run` holds the lock file exclusively while it runs.
-fn daemon_running(ctx: &Ctx) -> bool {
-    let lock = ctx.paths.lock();
-    if !lock.exists() {
-        return false;
-    }
-    let mut o = std::fs::OpenOptions::new();
-    o.write(true);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        o.share_mode(0);
-    }
-    o.open(lock).is_err()
 }
 
 fn task_installed() -> bool {

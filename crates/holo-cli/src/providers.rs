@@ -68,7 +68,7 @@ pub async fn connect(
     match kind {
         ProviderKind::OneDrive => {
             let opts = GraphOptions {
-                concurrency: cfg.sync.concurrency.max(1),
+                concurrency: cfg.sync.concurrency.max(1) + 4,
                 ..GraphOptions::default()
             };
             Ok(Arc::new(

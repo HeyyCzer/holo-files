@@ -1,14 +1,14 @@
 //! Local → remote operation journal. Ops are persisted before execution, re-check the
 //! current local state when they run (so they are idempotent), and survive crashes.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::Context as _;
 use chrono::Utc;
 use holo_core::{ProviderError, RelPath, RemoteItemId, UploadRequest, UploadTarget};
-use holo_state::{ItemRecord, OpState};
+use holo_state::{ItemRecord, OpRecord, OpState};
 use serde::{Deserialize, Serialize};
-use tokio::sync::watch;
+use tokio::{sync::watch, task::JoinSet};
 
 use crate::context::RootContext;
 
@@ -69,64 +69,220 @@ fn backoff(attempts: u32) -> Duration {
     Duration::from_secs((5u64 << attempts.min(7)).min(600))
 }
 
-/// Executor loop for one root.
+/// What the executor is doing right now; published to the state store (kv
+/// `progress/<root id>`) so `holo status --stream` / `holo ops --stream` can show it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ExecProgress {
+    /// Ops finished (completed or given up) since the daemon started.
+    pub done: u64,
+    pub failed: u64,
+    pub running: Vec<RunningOp>,
+    /// Unix ms of the last update.
+    pub updated_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunningOp {
+    pub id: i64,
+    pub kind: String,
+    pub path: String,
+    pub started_ms: i64,
+}
+
+pub fn progress_key(root_id: &str) -> String {
+    format!("progress/{root_id}")
+}
+
+/// Moves and deletes rewrite paths other ops depend on, so they run alone and in
+/// journal order. Everything else runs in parallel, never two ops on the same path.
+fn exclusive(op: &LocalOp) -> bool {
+    matches!(op, LocalOp::Move { .. } | LocalOp::Delete { .. })
+}
+
+fn op_path(op: &LocalOp) -> &RelPath {
+    match op {
+        LocalOp::Upload { path } | LocalOp::CreateFolder { path } => path,
+        LocalOp::Move { to, .. } => to,
+        LocalOp::Delete { path, .. } => path,
+    }
+}
+
+type Finished = (OpRecord, LocalOp, anyhow::Result<()>);
+
+/// Executor loop for one root: up to `cfg.op_workers` ops at a time.
 pub async fn run(ctx: Arc<RootContext>, mut shutdown: watch::Receiver<bool>) {
+    let workers = ctx.cfg.op_workers.max(1);
+    let mut tasks: JoinSet<Finished> = JoinSet::new();
+    let mut running: HashMap<i64, (RelPath, RunningOp)> = HashMap::new();
+    let mut barrier = false;
+    let mut progress = ExecProgress::default();
+    let publish = |p: &mut ExecProgress, running: &HashMap<i64, (RelPath, RunningOp)>| {
+        p.running = running.values().map(|(_, r)| r.clone()).collect();
+        p.running.sort_by_key(|r| r.id);
+        p.updated_ms = Utc::now().timestamp_millis();
+        if let Ok(json) = serde_json::to_string(p) {
+            let _ = ctx.state.kv_set(&progress_key(ctx.id()), &json);
+        }
+    };
+    publish(&mut progress, &running);
+
     loop {
-        while let Ok(Some(rec)) = ctx.state.next_op(ctx.id()) {
-            if *shutdown.borrow() {
-                return;
-            }
-            let op: LocalOp = match serde_json::from_str(&rec.payload) {
-                Ok(op) => op,
-                Err(e) => {
-                    let _ = ctx.state.set_op_state(
-                        rec.id,
-                        OpState::Failed,
-                        Some(&format!("bad payload: {e}")),
-                    );
-                    continue;
+        if *shutdown.borrow() {
+            break;
+        }
+        // Fill free slots, oldest ops first.
+        if !barrier && tasks.len() < workers {
+            let started = tasks.len();
+            match ctx.state.due_ops(ctx.id(), workers * 4 + running.len()) {
+                Ok(recs) => {
+                    for rec in recs {
+                        if tasks.len() >= workers {
+                            break;
+                        }
+                        if running.contains_key(&rec.id) {
+                            continue;
+                        }
+                        let op: LocalOp = match serde_json::from_str(&rec.payload) {
+                            Ok(op) => op,
+                            Err(e) => {
+                                let _ = ctx.state.set_op_state(
+                                    rec.id,
+                                    OpState::Failed,
+                                    Some(&format!("bad payload: {e}")),
+                                );
+                                continue;
+                            }
+                        };
+                        let path = op_path(&op).clone();
+                        if exclusive(&op) {
+                            if !tasks.is_empty() {
+                                break; // let earlier ops finish first
+                            }
+                            barrier = true;
+                        } else if running.values().any(|(p, _)| *p == path) {
+                            continue;
+                        }
+                        running.insert(
+                            rec.id,
+                            (
+                                path.clone(),
+                                RunningOp {
+                                    id: rec.id,
+                                    kind: op.kind().to_string(),
+                                    path: path.as_str().to_string(),
+                                    started_ms: Utc::now().timestamp_millis(),
+                                },
+                            ),
+                        );
+                        let c = ctx.clone();
+                        tasks.spawn(async move {
+                            let r = execute(&c, &op).await;
+                            (rec, op, r)
+                        });
+                        if barrier {
+                            break;
+                        }
+                    }
                 }
-            };
-            let result = execute(&ctx, &op).await;
-            let outcome = match result {
-                Ok(()) => ctx.state.complete_op(rec.id),
-                Err(e) => match e.downcast_ref::<Defer>() {
-                    Some(d) => {
-                        tracing::debug!(op = ?op, reason = %d.reason, "op deferred");
-                        ctx.state.retry_op(rec.id, &d.reason, Utc::now() + d.delay)
-                    }
-                    None if rec.attempts + 1 >= ctx.cfg.max_op_attempts => {
-                        tracing::error!(op = ?op, error = %format!("{e:#}"), "op failed permanently");
-                        ctx.state
-                            .set_op_state(rec.id, OpState::Failed, Some(&format!("{e:#}")))
-                    }
-                    None => {
-                        let delay = backoff(rec.attempts);
-                        tracing::warn!(op = ?op, error = %format!("{e:#}"), retry_in = ?delay, "op failed");
-                        ctx.state
-                            .retry_op(rec.id, &format!("{e:#}"), Utc::now() + delay)
-                    }
-                },
-            };
-            if let Err(e) = outcome {
-                tracing::error!(error = %e, "failed to update op journal");
+                Err(e) => tracing::error!(error = %e, "failed to read op journal"),
+            }
+            if tasks.len() != started {
+                publish(&mut progress, &running);
             }
         }
 
-        let wait = ctx
-            .state
-            .next_op_due(ctx.id())
-            .ok()
-            .flatten()
-            .and_then(|due| (due - Utc::now()).to_std().ok())
-            .unwrap_or(Duration::from_secs(30))
-            .min(Duration::from_secs(30));
+        if tasks.is_empty() {
+            let wait = ctx
+                .state
+                .next_op_due(ctx.id())
+                .ok()
+                .flatten()
+                .and_then(|due| (due - Utc::now()).to_std().ok())
+                .unwrap_or(Duration::from_secs(30))
+                .min(Duration::from_secs(30));
+            tokio::select! {
+                _ = ctx.wake_ops.notified() => {}
+                _ = tokio::time::sleep(wait) => {}
+                _ = shutdown.changed() => break,
+            }
+            continue;
+        }
+
         tokio::select! {
+            joined = tasks.join_next() => {
+                let Some(joined) = joined else { continue };
+                match joined {
+                    Ok((rec, op, result)) => {
+                        running.remove(&rec.id);
+                        if exclusive(&op) {
+                            barrier = false;
+                        }
+                        match finish(&ctx, &rec, &op, result) {
+                            Some(true) => progress.done += 1,
+                            Some(false) => { progress.done += 1; progress.failed += 1; }
+                            None => {}
+                        }
+                    }
+                    Err(e) => {
+                        // A panicking op: forget what was running; the journal row stays
+                        // pending and is picked up again.
+                        tracing::error!(error = %e, "op task panicked");
+                        running.clear();
+                        barrier = false;
+                    }
+                }
+                publish(&mut progress, &running);
+            }
             _ = ctx.wake_ops.notified() => {}
-            _ = tokio::time::sleep(wait) => {}
-            _ = shutdown.changed() => return,
+            _ = shutdown.changed() => break,
         }
     }
+    // Ops are idempotent and still journaled: dropping in-flight ones is safe.
+    tasks.shutdown().await;
+    running.clear();
+    publish(&mut progress, &running);
+}
+
+/// Record an op's outcome. `Some(true)` done, `Some(false)` failed for good, `None` retried later.
+fn finish(
+    ctx: &RootContext,
+    rec: &OpRecord,
+    op: &LocalOp,
+    result: anyhow::Result<()>,
+) -> Option<bool> {
+    let (outcome, status) = match result {
+        Ok(()) => (ctx.state.complete_op(rec.id), Some(true)),
+        Err(e) => match e.downcast_ref::<Defer>() {
+            Some(d) => {
+                tracing::debug!(op = ?op, reason = %d.reason, "op deferred");
+                (
+                    ctx.state.retry_op(rec.id, &d.reason, Utc::now() + d.delay),
+                    None,
+                )
+            }
+            None if rec.attempts + 1 >= ctx.cfg.max_op_attempts => {
+                tracing::error!(op = ?op, error = %format!("{e:#}"), "op failed permanently");
+                (
+                    ctx.state
+                        .set_op_state(rec.id, OpState::Failed, Some(&format!("{e:#}"))),
+                    Some(false),
+                )
+            }
+            None => {
+                let delay = backoff(rec.attempts);
+                tracing::warn!(op = ?op, error = %format!("{e:#}"), retry_in = ?delay, "op failed");
+                (
+                    ctx.state
+                        .retry_op(rec.id, &format!("{e:#}"), Utc::now() + delay),
+                    None,
+                )
+            }
+        },
+    };
+    if let Err(e) = outcome {
+        tracing::error!(error = %e, "failed to update op journal");
+    }
+    status
 }
 
 async fn blocking<T: Send + 'static>(
@@ -159,7 +315,21 @@ pub async fn ensure_remote_dir(
     {
         return Ok(r.remote_id);
     }
-    let parent = Box::pin(ensure_remote_dir(ctx, &rel.parent().unwrap_or_default())).await?;
+    let _guard = ctx.dir_lock.lock().await;
+    create_remote_dir(ctx, rel).await
+}
+
+/// `ensure_remote_dir` body; caller holds `dir_lock` (re-checks the state under it).
+async fn create_remote_dir(ctx: &Arc<RootContext>, rel: &RelPath) -> anyhow::Result<RemoteItemId> {
+    if rel.is_root() {
+        return Ok(ctx.remote_root().clone());
+    }
+    if let Some(r) = ctx.state.item_by_path(ctx.id(), rel)?
+        && r.is_dir
+    {
+        return Ok(r.remote_id);
+    }
+    let parent = Box::pin(create_remote_dir(ctx, &rel.parent().unwrap_or_default())).await?;
     let item = match ctx.provider.create_folder(&parent, rel.name()).await {
         Ok(item) => item,
         Err(ProviderError::NameConflict) => {

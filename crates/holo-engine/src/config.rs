@@ -25,6 +25,8 @@ pub struct EngineConfig {
     pub trash_dir: PathBuf,
     /// Attempts before an op is marked failed.
     pub max_op_attempts: u32,
+    /// Journal ops executed at the same time (uploads, folder creation).
+    pub op_workers: usize,
 }
 
 impl Default for EngineConfig {
@@ -46,6 +48,7 @@ impl Default for EngineConfig {
             ],
             trash_dir: std::env::temp_dir().join("holo-trash"),
             max_op_attempts: 8,
+            op_workers: 4,
         }
     }
 }
