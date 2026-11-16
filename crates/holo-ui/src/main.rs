@@ -3,6 +3,7 @@
 
 mod actions;
 mod icon;
+mod icon_draw;
 mod snapshot;
 mod tray;
 mod window;
@@ -31,16 +32,27 @@ fn tray_lock(ctx: &Ctx) -> Option<std::fs::File> {
     o.open(ctx.paths.data.join("ui.lock")).ok()
 }
 
+/// `--tray`: only the tray icon (logon autostart). `--window`: only the window (what
+/// the tray opens). No argument (Start menu): the window, starting the tray if needed.
 fn main() {
+    let arg = |name: &str| std::env::args().any(|a| a == name);
     let result = ctx().and_then(|ctx| {
-        if std::env::args().any(|a| a == "--window") {
+        if arg("--window") {
             return window::run(ctx);
         }
-        match tray_lock(&ctx) {
-            Some(_lock) => tray::run(ctx),
-            // Tray already running: launching again means "show me the window".
-            None => window::run(ctx),
+        if arg("--tray") {
+            return match tray_lock(&ctx) {
+                Some(_lock) => tray::run(ctx),
+                None => Ok(()), // already running
+            };
         }
+        if tray_lock(&ctx).is_some()
+            && let Ok(exe) = std::env::current_exe()
+        {
+            // The lock is released when this temporary drops, before the tray takes it.
+            let _ = std::process::Command::new(exe).arg("--tray").spawn();
+        }
+        window::run(ctx)
     });
     if let Err(e) = result {
         fatal(&format!("{e:#}"));

@@ -13,7 +13,7 @@ use holo_state::{OpRecord, OpState};
 
 use crate::{
     actions, icon,
-    snapshot::{RootView, Snapshot, Status, op_target},
+    snapshot::{RootView, Snapshot, op_target},
 };
 
 const REFRESH: Duration = Duration::from_secs(1);
@@ -46,15 +46,12 @@ pub fn run(ctx: Ctx) -> anyhow::Result<()> {
     let Some(show) = single_instance() else {
         return Ok(());
     };
-    let status = Snapshot::load(&ctx)
-        .map(|s| s.status())
-        .unwrap_or(Status::Stopped);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("holo")
             .with_inner_size([860.0, 620.0])
             .with_min_inner_size([560.0, 360.0])
-            .with_icon(Arc::new(icon::window(status))),
+            .with_icon(Arc::new(icon::window())),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };

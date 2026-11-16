@@ -21,7 +21,11 @@ pub enum ServiceAction {
     /// Ask the running daemon to shut down cleanly.
     Stop,
     /// Show whether the task is installed and the daemon is running.
-    Status,
+    Status {
+        /// Print nothing; exit code 0 if the daemon is running, 1 if not (for scripts).
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[derive(clap::Args, Clone, Copy)]

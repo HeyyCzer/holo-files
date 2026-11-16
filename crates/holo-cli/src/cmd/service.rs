@@ -26,7 +26,10 @@ pub async fn service(ctx: &Ctx, action: ServiceAction) -> anyhow::Result<()> {
         ServiceAction::Uninstall => uninstall(ctx).await,
         ServiceAction::Start => start(),
         ServiceAction::Stop => stop(ctx).await,
-        ServiceAction::Status => status(ctx),
+        ServiceAction::Status { check: true } => {
+            std::process::exit(if daemon_running(ctx) { 0 } else { 1 })
+        }
+        ServiceAction::Status { check: false } => status(ctx),
     }
 }
 

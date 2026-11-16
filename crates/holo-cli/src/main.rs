@@ -51,7 +51,11 @@ enum Command {
     /// Unregister a sync root. Files that are only in the cloud disappear locally.
     RemoveRoot {
         /// Local path or root id.
-        root: String,
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        root: Option<String>,
+        /// Remove every sync root (used by the uninstaller).
+        #[arg(long)]
+        all: bool,
         /// Confirm.
         #[arg(long)]
         yes: bool,
@@ -167,7 +171,11 @@ async fn main() -> anyhow::Result<()> {
             account,
             create,
         } => cmd::roots::add(&ctx, &local, &remote, account.as_deref(), create).await,
-        Command::RemoveRoot { root, yes } => cmd::roots::remove(&ctx, &root, yes),
+        Command::RemoveRoot { root, all, yes } => match root {
+            Some(root) => cmd::roots::remove(&ctx, &root, yes),
+            None if all => cmd::roots::remove_all(&ctx, yes),
+            None => unreachable!("clap requires a root or --all"),
+        },
         Command::Roots => cmd::roots::list(&ctx),
         Command::Plan {
             target,

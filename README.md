@@ -50,7 +50,20 @@ uploads, exclusões) é testada com um filesystem em memória e um provedor fals
    - plataforma: *Aplicativos móveis e da área de trabalho*, redirect `http://localhost`
    - *Permitir fluxos de cliente público*: **Sim**
    - permissões delegadas: `Files.ReadWrite`, `User.Read`, `offline_access`
-2. Compilar: `cargo build --release` (binários em `target/release/`: `holo.exe` e `holo-ui.exe`, que precisam ficar na mesma pasta).
+2. Instalar: `.\installer\build.ps1` gera `target\installer\holo-setup-<versão>.exe`
+   ([Inno Setup 6](https://jrsoftware.org/isinfo.php): `winget install JRSoftware.InnoSetup`).
+   O instalador é por usuário, sem admin:
+   - `holo.exe` e `holo-ui.exe` vão para `%LOCALAPPDATA%\Programs\holo`;
+   - `holo` entra no PATH do usuário (terminal novo);
+   - "holo" aparece no Menu Iniciar (abre a janela e o ícone da bandeja);
+   - opcional: ícone na bandeja ao entrar no Windows.
+
+   Para atualizar, rode o instalador novo por cima. Ele fecha o tray e para o daemon antes
+   de trocar os exes, re-aponta a tarefa do `holo service` para o local novo e religa o
+   daemon só se ele estava rodando. A desinstalação para tudo e pergunta se também remove
+   as pastas do Explorer e os dados (padrão: não; reinstalar continua de onde parou).
+
+   Sem instalador: `cargo build --release` (`holo.exe` e `holo-ui.exe` precisam ficar na mesma pasta).
 3. `holo config` mostra onde fica o `config.toml`. Coloque o *Client ID* em `[onedrive].client_id`.
 4. Usar:
 

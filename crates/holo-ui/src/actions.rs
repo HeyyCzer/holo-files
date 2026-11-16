@@ -128,7 +128,7 @@ pub fn autostart_enabled() -> bool {
 pub fn set_autostart(on: bool) -> anyhow::Result<()> {
     let ok = if on {
         let exe = std::env::current_exe()?;
-        let value = format!("\"{}\"", exe.display());
+        let value = format!("\"{}\" --tray", exe.display());
         reg(&[
             "add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", &value, "/f",
         ])

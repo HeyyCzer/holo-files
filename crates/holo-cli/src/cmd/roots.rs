@@ -205,6 +205,24 @@ pub fn remove(ctx: &Ctx, key: &str, yes: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `remove-root --all`: try every root, report all failures at the end.
+pub fn remove_all(ctx: &Ctx, yes: bool) -> anyhow::Result<()> {
+    let roots = ctx.state.roots()?;
+    if roots.is_empty() {
+        println!("No sync roots.");
+        return Ok(());
+    }
+    let mut failed = 0;
+    for r in roots {
+        if let Err(e) = remove(ctx, &r.id, yes) {
+            eprintln!("! {}: {e:#}", r.local_path);
+            failed += 1;
+        }
+    }
+    anyhow::ensure!(failed == 0, "{failed} root(s) could not be removed");
+    Ok(())
+}
+
 pub fn list(ctx: &Ctx) -> anyhow::Result<()> {
     let roots = ctx.state.roots()?;
     if roots.is_empty() {

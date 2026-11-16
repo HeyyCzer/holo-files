@@ -91,6 +91,8 @@ pub fn classify(ctx: &RootContext, path: &Path) -> std::io::Result<Vec<Classifie
 
 struct LocalTask {
     ctx: Arc<RootContext>,
+    /// Shutdown signal, checked inside long scans so stopping never waits for them.
+    stop: watch::Receiver<bool>,
     dirty: HashMap<PathBuf, Instant>,
     deletes: VecDeque<Instant>,
 }
@@ -263,12 +265,18 @@ impl LocalTask {
 
     /// Walk the whole root; with `detect_missing`, known items absent locally are
     /// treated as deleted while we weren't watching.
+    /// Abandoned (nothing journaled) if shutdown is requested meanwhile.
     async fn scan(&mut self, detect_missing: bool) {
         let ctx = self.ctx.clone();
+        let stop = self.stop.clone();
         let scan = tokio::task::spawn_blocking(move || {
+            let stopping = || *stop.borrow();
             let mut dirty = Vec::new();
             let mut stack = vec![ctx.local_root.clone()];
             while let Some(dir) = stack.pop() {
+                if stopping() {
+                    return None;
+                }
                 let Ok(names) = ctx.tree.read_dir(&dir) else {
                     continue;
                 };
@@ -303,16 +311,25 @@ impl LocalTask {
             }
             let mut missing = Vec::new();
             if detect_missing {
-                for item in ctx.state.all_items(ctx.id()).unwrap_or_default() {
+                for (i, item) in ctx
+                    .state
+                    .all_items(ctx.id())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .enumerate()
+                {
+                    if i % 1024 == 0 && stopping() {
+                        return None;
+                    }
                     let p = ctx.local(&item.rel_path);
                     if matches!(ctx.tree.state(&p), Ok(None)) {
                         missing.push(p);
                     }
                 }
             }
-            (dirty, missing)
+            Some((dirty, missing))
         });
-        let Ok((dirty, missing)) = scan.await else {
+        let Ok(Some((dirty, missing))) = scan.await else {
             return;
         };
         tracing::info!(
@@ -344,10 +361,14 @@ pub async fn run(
 ) {
     let mut task = LocalTask {
         ctx: ctx.clone(),
+        stop: shutdown.clone(),
         dirty: HashMap::new(),
         deletes: VecDeque::new(),
     };
-    let _ = ready.wait_for(|r| *r).await;
+    tokio::select! {
+        _ = ready.wait_for(|r| *r) => {}
+        _ = shutdown.changed() => return,
+    }
     task.scan(true).await;
 
     let mut full_scan = tokio::time::interval(ctx.cfg.full_scan_interval);

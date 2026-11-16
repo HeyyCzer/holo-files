@@ -25,5 +25,8 @@ tray-icon = "0.26"
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = ["Win32_UI_WindowsAndMessaging"] }
 
+[build-dependencies]
+embed-resource = "3"
+
 [lints]
 workspace = true
