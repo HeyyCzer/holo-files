@@ -50,7 +50,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn icons_have_transparent_corners_and_opaque_centre() {
+    fn icons_have_transparent_corners_and_opaque_badge() {
         for s in [
             Status::UpToDate,
             Status::Syncing,
@@ -61,8 +61,10 @@ mod tests {
             let px = rgba(s);
             assert_eq!(px.len(), (SIZE * SIZE * 4) as usize);
             assert_eq!(px[3], 0, "corner is transparent");
-            let mid = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;
-            assert_eq!(px[mid + 3], 255, "centre is opaque");
+            // Badge centre: (184, 184) in the 256-unit viewBox.
+            let b = SIZE * 184 / 256;
+            let badge = ((b * SIZE + b) * 4) as usize;
+            assert_eq!(px[badge + 3], 255, "badge is opaque");
         }
     }
 
