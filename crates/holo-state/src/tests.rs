@@ -138,3 +138,34 @@ fn deleting_root_cascades() {
     assert_eq!(s.item_count("root").unwrap(), 0);
     assert!(s.ops(None).unwrap().is_empty());
 }
+
+#[test]
+fn activity_merges_downloads_and_is_bounded() {
+    let s = store_with_root();
+    let dl = |path, bytes| NewActivity {
+        kind: ActivityKind::Downloaded,
+        path,
+        detail: Some("app.exe"),
+        bytes: Some(bytes),
+        error: None,
+    };
+    s.add_activity("root", &dl("a.bin", 10)).unwrap();
+    s.add_activity("root", &dl("a.bin", 5)).unwrap();
+    let r = s.recent_activity(Some("root"), 10).unwrap();
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].bytes, Some(15));
+
+    let up = NewActivity {
+        kind: ActivityKind::Uploaded,
+        path: "b.txt",
+        detail: None,
+        bytes: None,
+        error: None,
+    };
+    for _ in 0..(ACTIVITY_KEEP + 5) {
+        s.add_activity("root", &up).unwrap();
+    }
+    let r = s.recent_activity(None, 5000).unwrap();
+    assert_eq!(r.len() as i64, ACTIVITY_KEEP);
+    assert_eq!(r[0].kind, Some(ActivityKind::Uploaded));
+}

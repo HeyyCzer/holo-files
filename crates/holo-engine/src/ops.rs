@@ -309,6 +309,7 @@ fn finish(
     op: &LocalOp,
     result: anyhow::Result<()>,
 ) -> Option<bool> {
+    let mut failed_with = None;
     let (outcome, status) = match result {
         Ok(()) => (ctx.state.complete_op(rec.id), Some(true)),
         Err(e) => match e.downcast_ref::<Defer>() {
@@ -320,12 +321,11 @@ fn finish(
                 )
             }
             None if rec.attempts + 1 >= ctx.cfg.max_op_attempts => {
-                tracing::error!(op = ?op, error = %format!("{e:#}"), "op failed permanently");
-                (
-                    ctx.state
-                        .set_op_state(rec.id, OpState::Failed, Some(&format!("{e:#}"))),
-                    Some(false),
-                )
+                let msg = format!("{e:#}");
+                tracing::error!(op = ?op, error = %msg, "op failed permanently");
+                let r = ctx.state.set_op_state(rec.id, OpState::Failed, Some(&msg));
+                failed_with = Some(msg);
+                (r, Some(false))
             }
             None => {
                 let delay = backoff(rec.attempts);
@@ -341,7 +341,32 @@ fn finish(
     if let Err(e) = outcome {
         tracing::error!(error = %e, "failed to update op journal");
     }
+    if status.is_some() {
+        record(ctx, op, failed_with.as_deref());
+    }
     status
+}
+
+/// Add a finished op to the activity list (`error`: it failed for good).
+fn record(ctx: &RootContext, op: &LocalOp, error: Option<&str>) {
+    use holo_state::{ActivityKind, NewActivity};
+    let (kind, path) = match op {
+        LocalOp::Upload { path } => (ActivityKind::Uploaded, path),
+        LocalOp::CreateFolder { path } => (ActivityKind::FolderCreated, path),
+        LocalOp::Move { to, .. } => (ActivityKind::Moved, to),
+        LocalOp::Delete { path, .. } => (ActivityKind::Deleted, path),
+    };
+    let bytes = matches!(op, LocalOp::Upload { .. })
+        .then(|| std::fs::metadata(ctx.local(path)).ok().map(|m| m.len()))
+        .flatten();
+    let path = path.to_string();
+    ctx.activity(NewActivity {
+        kind,
+        path: &path,
+        detail: None,
+        bytes,
+        error,
+    });
 }
 
 async fn blocking<T: Send + 'static>(

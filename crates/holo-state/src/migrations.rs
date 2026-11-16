@@ -55,6 +55,20 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX ops_ready ON ops(root_id, state, not_before);
     CREATE TABLE kv(key TEXT PRIMARY KEY, value TEXT NOT NULL);
     "#,
+    // v2: recent activity shown in the UI (bounded per root).
+    r#"
+    CREATE TABLE activity(
+        id      INTEGER PRIMARY KEY AUTOINCREMENT,
+        root_id TEXT NOT NULL REFERENCES roots(id) ON DELETE CASCADE,
+        at      INTEGER NOT NULL,
+        kind    TEXT NOT NULL,
+        path    TEXT NOT NULL,
+        detail  TEXT,
+        bytes   INTEGER,
+        error   TEXT
+    );
+    CREATE INDEX activity_by_root ON activity(root_id, id);
+    "#,
 ];
 
 pub fn apply(conn: &Connection) -> rusqlite::Result<()> {

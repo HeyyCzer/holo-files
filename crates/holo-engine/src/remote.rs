@@ -299,7 +299,12 @@ pub fn apply(ctx: &RootContext, changes: &[RemoteItem], full: bool) -> anyhow::R
 
     let mut failed = 0usize;
     for action in &actions {
-        if let Err(e) = apply_action(ctx, action, &deleting) {
+        let r = apply_action(ctx, action, &deleting);
+        // A full listing (first sync, resync) would flood the list with every item.
+        if !full {
+            record(ctx, action, r.as_ref().err());
+        }
+        if let Err(e) = r {
             failed += 1;
             tracing::warn!(root = ctx.id(), ?action, error = %e, "failed to apply remote change");
         }
@@ -330,6 +335,42 @@ pub fn apply(ctx: &RootContext, changes: &[RemoteItem], full: bool) -> anyhow::R
     }
     anyhow::ensure!(failed == 0, "{failed} remote change(s) failed");
     Ok(())
+}
+
+/// Add an applied cloud change to the activity list.
+fn record(ctx: &RootContext, action: &RemoteAction, error: Option<&anyhow::Error>) {
+    use holo_state::{ActivityKind, NewActivity};
+    let from;
+    let (kind, path, detail, bytes) = match action {
+        RemoteAction::Create { item, path } => (
+            ActivityKind::CloudAdded,
+            path,
+            None,
+            (!item.is_dir()).then_some(item.size),
+        ),
+        RemoteAction::Change {
+            item, from: f, to, ..
+        } => {
+            from = (f.key() != to.key()).then(|| f.to_string());
+            (
+                ActivityKind::CloudChanged,
+                to,
+                from.as_deref(),
+                (!item.is_dir()).then_some(item.size),
+            )
+        }
+        RemoteAction::Delete { path, .. } => (ActivityKind::CloudDeleted, path, None, None),
+        RemoteAction::Forget { .. } => return,
+    };
+    let path = path.to_string();
+    let error = error.map(|e| format!("{e:#}"));
+    ctx.activity(NewActivity {
+        kind,
+        path: &path,
+        detail,
+        bytes,
+        error: error.as_deref(),
+    });
 }
 
 fn apply_action(

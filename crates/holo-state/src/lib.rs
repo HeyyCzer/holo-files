@@ -28,6 +28,9 @@ pub enum StateError {
 
 pub type StateResult<T> = Result<T, StateError>;
 
+/// Activity entries kept per root.
+pub const ACTIVITY_KEEP: i64 = 1000;
+
 /// Thread-safe handle; every call is a short transaction, so a plain mutex is enough
 /// and keeps Cloud Filter callbacks from ever waiting on long work.
 pub struct StateStore {
@@ -337,6 +340,62 @@ impl StateStore {
                 |r| r.get::<_, Option<i64>>(0),
             )
             .map(|v| v.map(from_ms))
+        })
+    }
+
+    /// Record something that happened, keeping the newest `ACTIVITY_KEEP` per root.
+    /// Repeated downloads of the same file within a few minutes (an app reading it in
+    /// chunks) are merged into one entry.
+    pub fn add_activity(&self, root_id: &str, a: &NewActivity<'_>) -> StateResult<()> {
+        const MERGE_WINDOW_MS: i64 = 5 * 60 * 1000;
+        let now = ms(Utc::now());
+        self.with(|c| {
+            if a.kind == ActivityKind::Downloaded && a.error.is_none() {
+                let merged = c.execute(
+                    "UPDATE activity SET at = ?3, bytes = COALESCE(bytes, 0) + ?4
+                     WHERE id = (SELECT id FROM activity WHERE root_id = ?1 ORDER BY id DESC LIMIT 1)
+                       AND kind = 'downloaded' AND path = ?2 AND error IS NULL AND at >= ?5",
+                    params![root_id, a.path, now, a.bytes.unwrap_or(0) as i64, now - MERGE_WINDOW_MS],
+                )?;
+                if merged > 0 {
+                    return Ok(());
+                }
+            }
+            c.execute(
+                "INSERT INTO activity(root_id, at, kind, path, detail, bytes, error)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    root_id,
+                    now,
+                    a.kind.as_str(),
+                    a.path,
+                    a.detail,
+                    a.bytes.map(|b| b as i64),
+                    a.error
+                ],
+            )?;
+            c.execute(
+                "DELETE FROM activity WHERE root_id = ?1 AND id <= (
+                     SELECT id FROM activity WHERE root_id = ?1 ORDER BY id DESC LIMIT 1 OFFSET ?2)",
+                params![root_id, ACTIVITY_KEEP],
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// Newest first; all roots when `root_id` is `None`.
+    pub fn recent_activity(
+        &self,
+        root_id: Option<&str>,
+        limit: usize,
+    ) -> StateResult<Vec<ActivityRecord>> {
+        self.with(|c| {
+            let mut s = c.prepare(
+                "SELECT id, root_id, at, kind, path, detail, bytes, error FROM activity
+                 WHERE ?1 IS NULL OR root_id = ?1 ORDER BY id DESC LIMIT ?2",
+            )?;
+            s.query_map(params![root_id, limit as i64], ActivityRecord::from_row)?
+                .collect()
         })
     }
 

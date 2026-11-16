@@ -10,7 +10,7 @@ use holo_core::{
     CloudProvider, RelPath, RemoteItemId,
     ignore_rules::{IGNORE_FILE, IgnoreRules},
 };
-use holo_state::{RootRecord, StateStore};
+use holo_state::{NewActivity, RootRecord, StateStore};
 use tokio::sync::{Notify, mpsc};
 
 use crate::{EngineConfig, LocalTree, ops::LocalOp};
@@ -47,6 +47,13 @@ impl RootContext {
 
     pub fn remote_root(&self) -> &RemoteItemId {
         &self.root.remote_root_id
+    }
+
+    /// Add to the "recent activity" list (best effort: never fails the sync).
+    pub fn activity(&self, a: NewActivity<'_>) {
+        if let Err(e) = self.state.add_activity(self.id(), &a) {
+            tracing::debug!(root = self.id(), error = %e, "recording activity failed");
+        }
     }
 
     pub fn local(&self, rel: &RelPath) -> PathBuf {

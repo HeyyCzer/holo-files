@@ -137,6 +137,13 @@ impl Handler {
             return;
         };
         let a = t.progress.active.remove(i);
+        self.ctx.activity(holo_state::NewActivity {
+            kind: holo_state::ActivityKind::Downloaded,
+            path: &a.path,
+            detail: a.process.as_deref(),
+            bytes: Some(a.done),
+            error: error.as_deref(),
+        });
         let now = Utc::now().timestamp_millis();
         let mut recent: VecDeque<_> = std::mem::take(&mut t.progress.recent).into();
         recent.push_front(FinishedHydration {

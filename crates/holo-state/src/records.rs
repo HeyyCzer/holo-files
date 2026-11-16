@@ -195,3 +195,92 @@ pub struct OpCounts {
     pub held: u64,
     pub failed: u64,
 }
+
+/// What happened, for the "recent activity" list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivityKind {
+    /// Local file sent to the cloud.
+    Uploaded,
+    /// Local folder created in the cloud.
+    FolderCreated,
+    /// Local move/rename applied in the cloud (`path` is the new path).
+    Moved,
+    /// Local deletion applied in the cloud.
+    Deleted,
+    /// New item in the cloud, now visible locally.
+    CloudAdded,
+    /// Item changed in the cloud (content, or moved when `detail` holds the old path).
+    CloudChanged,
+    /// Item deleted in the cloud, removed locally.
+    CloudDeleted,
+    /// Cloud-only file downloaded because an app opened it (`detail`: the app).
+    Downloaded,
+}
+
+impl ActivityKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Uploaded => "uploaded",
+            Self::FolderCreated => "folder_created",
+            Self::Moved => "moved",
+            Self::Deleted => "deleted",
+            Self::CloudAdded => "cloud_added",
+            Self::CloudChanged => "cloud_changed",
+            Self::CloudDeleted => "cloud_deleted",
+            Self::Downloaded => "downloaded",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "uploaded" => Self::Uploaded,
+            "folder_created" => Self::FolderCreated,
+            "moved" => Self::Moved,
+            "deleted" => Self::Deleted,
+            "cloud_added" => Self::CloudAdded,
+            "cloud_changed" => Self::CloudChanged,
+            "cloud_deleted" => Self::CloudDeleted,
+            "downloaded" => Self::Downloaded,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ActivityRecord {
+    pub id: i64,
+    pub root_id: String,
+    pub at: DateTime<Utc>,
+    pub kind: Option<ActivityKind>,
+    pub path: String,
+    pub detail: Option<String>,
+    pub bytes: Option<u64>,
+    /// Set when it failed for good.
+    pub error: Option<String>,
+}
+
+impl ActivityRecord {
+    pub(crate) fn from_row(r: &Row<'_>) -> rusqlite::Result<Self> {
+        let kind: String = r.get(3)?;
+        Ok(Self {
+            id: r.get(0)?,
+            root_id: r.get(1)?,
+            at: from_ms(r.get(2)?),
+            kind: ActivityKind::parse(&kind),
+            path: r.get(4)?,
+            detail: r.get(5)?,
+            bytes: r.get::<_, Option<i64>>(6)?.map(|b| b.max(0) as u64),
+            error: r.get(7)?,
+        })
+    }
+}
+
+/// A new activity entry (see `StateStore::add_activity`).
+#[derive(Debug, Clone)]
+pub struct NewActivity<'a> {
+    pub kind: ActivityKind,
+    pub path: &'a str,
+    pub detail: Option<&'a str>,
+    pub bytes: Option<u64>,
+    pub error: Option<&'a str>,
+}
